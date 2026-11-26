@@ -113,9 +113,6 @@ final class RddPlanGuard {
         if ("equipment".equals(conditionType) && EQUIPMENT_EXTRA.matcher(d).find()) {
             gaps.add("装备外要求（equipment只证护甲槽，不证主手/副手/食物；必须拆步）");
         }
-        if ("base".equals(conditionType) && DISTANT_BASE.matcher(d).find()) {
-            gaps.add("远处基地（base只证当前床边基地，不能冒充新地点备用基地）");
-        }
         if ("dimension".equals(conditionType) && TRAVEL_INTENT.matcher(d).find()) {
             gaps.add("迁移（dimension只证当前维度，不能证明前往远处或建立新基地）");
         }
@@ -146,7 +143,7 @@ final class RddPlanGuard {
 
     private static boolean stateOnlyPredicate(String type) {
         return java.util.Set.of("equipment", "base", "dimension", "stocked", "lit", "shelter",
-                "container_at", "container_nearby", "position_at").contains(type);
+                "container_at", "container_nearby").contains(type);
     }
 
     private static boolean mutationIntent(String description) {
@@ -159,8 +156,6 @@ final class RddPlanGuard {
             java.util.regex.Pattern.compile("(?:床|箱|工作台|熔炉|食物|熟食)");
     private static final java.util.regex.Pattern EQUIPMENT_EXTRA =
             java.util.regex.Pattern.compile("(?:主手|副手|食物|熟食|可食)");
-    private static final java.util.regex.Pattern DISTANT_BASE =
-            java.util.regex.Pattern.compile("(?:远处|新地点|备用基地|迁移)");
     private static final java.util.regex.Pattern TRAVEL_INTENT =
             java.util.regex.Pattern.compile("(?:迁移|前往|远处|新地点|\\d{2,4}\\s*格)");
 

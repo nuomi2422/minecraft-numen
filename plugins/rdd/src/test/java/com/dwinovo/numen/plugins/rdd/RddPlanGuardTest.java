@@ -259,7 +259,7 @@ class RddPlanGuardTest {
                 RddPlanGuard.predicateGaps(travel).toString());
         SubtaskSpec build = new SubtaskSpec("在远处新地点建立备用基地并放入床箱工作台熔炉",
                 Map.of("type", "base"), null);
-        assertTrue(RddPlanGuard.predicateGaps(build).stream().anyMatch(g -> g.contains("远处基地")),
+        assertTrue(RddPlanGuard.predicateGaps(build).stream().anyMatch(g -> g.contains("执行动作")),
                 RddPlanGuard.predicateGaps(build).toString());
     }
 
@@ -303,6 +303,23 @@ class RddPlanGuardTest {
                 List.of(new com.dwinovo.numen.rdd.api.ResourceUse("minecraft:iron_sword", 1,
                         com.dwinovo.numen.rdd.api.ResourceUse.Kind.TRANSFER)));
         assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void positionAt可证明真实到达() {
+        SubtaskSpec s = new SubtaskSpec("沿安全路线前往远处候选点并到达坐标",
+                Map.of("type", "position_at", "x", 21100, "y", 64, "z", 10100, "radius", 4), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void base可核验已绑定的远处基地但不能冒充建造() {
+        SubtaskSpec check = new SubtaskSpec("核验当前重生点已绑定的远处备用基地是否可用",
+                Map.of("type", "base"), null);
+        assertTrue(RddPlanGuard.predicateGaps(check).isEmpty(), RddPlanGuard.predicateGaps(check).toString());
+        SubtaskSpec build = new SubtaskSpec("在远处新地点建立备用基地并放入床箱工作台熔炉",
+                Map.of("type", "base"), null);
+        assertFalse(RddPlanGuard.predicateGaps(build).isEmpty());
     }
 
     @Test
