@@ -14,6 +14,7 @@ import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -48,6 +49,44 @@ public final class NumenPlayer extends ServerPlayer {
 
     /** Latched once we've handled this body's death, so the post-death routine runs exactly once. */
     private boolean deathHandled;
+
+    /** First-death-wins generation; never reset by the temporary post-death heal. */
+    private long deathGeneration;
+    /** Captured before vanilla clears the inventory; absence means the fact is UNKNOWN. */
+    private DeathInventorySnapshot deathInventorySnapshot;
+
+    private void latchDeath(boolean captureInventory) {
+        if (deathGeneration != 0) return;
+        deathGeneration = 1;
+        if (!captureInventory) return;
+        try {
+            deathInventorySnapshot = DeathInventorySnapshot.capture(this, deathGeneration);
+            Companions.rememberDeathInventory(deathInventorySnapshot);
+        } catch (RuntimeException ex) {
+            // Vanilla death must still run. Do not retry after super.die(): the inventory is then
+            // already empty and a retry would manufacture a false known-empty death fact.
+            com.dwinovo.numen.Constants.LOG.warn("[numen] 死亡前背包快照失败 {}: {}",
+                    getUUID(), ex.toString());
+        }
+    }
+
+    /** Positive only after this concrete body has latched a death observation. */
+    public long deathGeneration() {
+        return deathGeneration;
+    }
+
+    /** Remains true through the delayed DEATH event, even after onDeath heals the saved body. */
+    public boolean deathPending() {
+        return deathGeneration != 0 || getHealth() <= 0.0f || isDeadOrDying();
+    }
+
+    /**
+     * Immutable pre-death inventory fact. {@link Optional#empty()} means UNKNOWN, not zero;
+     * a present snapshot may legitimately contain an empty map when capture observed no items.
+     */
+    public Optional<DeathInventorySnapshot> deathInventorySnapshot() {
+        return Optional.ofNullable(deathInventorySnapshot);
+    }
 
     /**
      * 死因,在 {@link #die} 里趁早抄下来。
@@ -434,6 +473,8 @@ public final class NumenPlayer extends ServerPlayer {
      */
     @Override
     public void die(net.minecraft.world.damagesource.DamageSource cause) {
+        // Must run before super.die(): vanilla drops and clears the inventory synchronously.
+        latchDeath(true);
         this.deathMessage = getCombatTracker().getDeathMessage().getString();
         // ↓ 结构化死因：与语言无关的下游靠它，归因/聚合全靠这两个字段。
         if (cause != null) {
@@ -472,6 +513,9 @@ public final class NumenPlayer extends ServerPlayer {
         // sit at 0 HP forever. Detect death once, hand off to the recoverable-death routine (stop the
         // brain, schedule a respawn at the owner), and skip the normal movement/AI tick for this corpse.
         if (!deathHandled && (getHealth() <= 0.0f || isDeadOrDying())) {
+            // A death observed without die() cannot be sampled safely after the clear. Latch the
+            // generation, leave the snapshot absent (UNKNOWN), and never manufacture an empty one.
+            latchDeath(false);
             deathHandled = true;
             Companions.onDeath(this);
             return;

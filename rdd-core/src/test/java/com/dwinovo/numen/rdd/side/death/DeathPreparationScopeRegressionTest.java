@@ -35,7 +35,8 @@ class DeathPreparationScopeRegressionTest {
     private static SideTaskEngine start(TaskChain c,Port p,List<Map<String,Object>> terminal,Map<String,AssetSemantics> semantics) {
         var engine=new SideTaskEngine((event,data)->{if(event.equals("side_task_completed")||event.equals("side_task_skipped"))terminal.add(data);},t->t);
         engine.registerType(new DeathRecoverySideTaskType());
-        assertTrue(engine.startNow(new DeathRecoverySideTaskType(),C,p,token(c),Map.of("death_seq","7")));
+        assertTrue(engine.startNow(new DeathRecoverySideTaskType(),C,p,token(c),Map.of("death_seq","7",
+                "lost_items","minecraft:iron_chestplate=1")));
         assertTrue(DeathPreparation.attach(engine,C,c,semantics,Map.of(IRON,"chest",DIAMOND,"chest")));
         return engine;
     }

@@ -54,7 +54,7 @@ class ServerToolTransportExternalNamespaceTest {
         sources.put("com.google.gson.JsonElement",
                 "package com.google.gson; public class JsonElement {public boolean isJsonObject(){return false;} public JsonObject getAsJsonObject(){return new JsonObject();} public boolean isJsonPrimitive(){return false;} public JsonPrimitive getAsJsonPrimitive(){return new JsonPrimitive();} public boolean getAsBoolean(){return false;}}");
         sources.put("com.google.gson.JsonObject",
-                "package com.google.gson; public class JsonObject extends JsonElement {public boolean has(String s){return false;} public JsonElement get(String s){return new JsonElement();}}");
+                "package com.google.gson; public class JsonObject extends JsonElement {public boolean has(String s){return false;} public JsonElement get(String s){return new JsonElement();} public JsonElement remove(String key){return null;} public JsonObject addProperty(String key,String value){return this;}}");
         sources.put("com.google.gson.JsonPrimitive",
                 "package com.google.gson; public class JsonPrimitive extends JsonElement {public boolean isBoolean(){return false;}}");
         sources.put("com.google.gson.JsonParser",

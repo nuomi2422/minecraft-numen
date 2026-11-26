@@ -28,6 +28,11 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
     public static final String PHASE_RESET_MAINLINE = "RESET_MAINLINE";
     public static final String KEY_DECISION = "decision";
 
+    /** Empty/missing item evidence is UNKNOWN even if a world scan found no tracked entity. */
+    public static boolean hasUnknownLostItems(SideTask task) {
+        return task == null || task.data().getOrDefault("lost_items", "").isBlank();
+    }
+
     /** 业务保护线；不代表掉落实体已经消失。 */
     public static final long DEADLINE_TICKS = 24_000L;
 
@@ -61,7 +66,13 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
     public SideTaskVerdict evaluate(SideTask task, SideTaskWorldPort world) {
         SideTaskWorldPort.DeathRecoveryFacts facts =
                 world.deathRecoveryFacts(task.companionId(), task);
+        if (hasUnknownLostItems(task)) {
+            facts = new SideTaskWorldPort.DeathRecoveryFacts(SideTaskWorldPort.DeathDropState.UNKNOWN,
+                    facts.dangerous(), facts.backupAvailable(), facts.inventoryKnown(),
+                    "逐项损失未知：空表不证明无损失，也不证明永久丢失");
+        }
         Map<String, String> data = new LinkedHashMap<>(task.data());
+        data.put("lost_items_state", hasUnknownLostItems(task) ? "UNKNOWN" : "TRACKED");
         data.put("drop_state", facts.dropState().name());
         String rawDecision = data.getOrDefault(KEY_DECISION, "PENDING");
         DeathRecoveryDecision decision = "PENDING".equals(rawDecision)
@@ -157,12 +168,17 @@ public final class DeathRecoverySideTaskType implements SideTaskType {
         String at = task.data().getOrDefault("death_at", "死亡点未知");
         String dimension = task.data().getOrDefault("dimension", "维度未知");
         String state = task.data().getOrDefault("drop_state", "UNKNOWN");
+        String itemState = hasUnknownLostItems(task) ? "UNKNOWN" : "TRACKED";
         String dangerous = task.data().getOrDefault("dangerous", "false");
         String backup = task.data().getOrDefault("backup_available", "false");
         return "<death_recovery scope=SIDE death_seq=\"" + esc(seq)
                 + "\" dimension=\"" + esc(dimension) + "\" death_at=\"" + esc(at)
-                + "\" drop_state=\"" + esc(state) + "\" dangerous=\"" + esc(dangerous)
+                + "\" drop_state=\"" + esc(state) + "\" lost_items_state=\"" + esc(itemState)
+                + "\" dangerous=\"" + esc(dangerous)
                 + "\" backup_available=\"" + esc(backup) + ">"
+                + ("UNKNOWN".equals(itemState)
+                    ? "逐项损失未知：不得把空表解释为无损失或永久丢失；先核当前能力并选择恢复/重规划。"
+                    : "")
                 + ("true".equals(task.data().get("prepare_required")) || DeathPreparation.prepares(
                         DeathRecoveryDecision.parse(task.data().get("decision")))
                     ? "当前先整备装备，不继续原交易步骤。下一恢复步骤：" + esc(DeathPreparation.context(task))

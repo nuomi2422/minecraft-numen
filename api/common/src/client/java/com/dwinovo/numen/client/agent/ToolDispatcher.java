@@ -5,6 +5,8 @@ import com.dwinovo.numen.agent.tool.ClientToolContext;
 import com.dwinovo.numen.agent.tool.LocalToolCallLog;
 import com.dwinovo.numen.agent.tool.NumenTool;
 import com.dwinovo.numen.agent.tool.ToolCall;
+import com.dwinovo.numen.agent.tool.ToolCallLoopWatch;
+import com.dwinovo.numen.agent.tool.ToolCallObserver;
 import com.dwinovo.numen.agent.tool.ToolInvocation;
 import com.dwinovo.numen.agent.tool.ToolRegistry;
 import com.dwinovo.numen.api.CompanionEvent;
@@ -127,9 +129,13 @@ public final class ToolDispatcher {
         String json = TaskResult.fail("tool timed out (no result returned)").toJson();
         // 客户端不再给每条结果补写 tool_result（2026-11-01 L1）。本地工具由 complete()
         // 里的 publishResult 记（带 duration），这里只为没有本地写者的调用补一行。
-        NumenTool timedOut = ToolRegistry.resolve(inv.name());
+        NumenTool timedOut = ToolRegistry.resolve(
+                com.dwinovo.numen.agent.tool.ToolAliases.resolve(inv.name()));
         if (timedOut == null || !LocalToolCallLog.runsLocally(timedOut)) {
             LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
+            // No server result exists to observe this synthetic timeout.
+            String advice = ToolCallLoopWatch.onResult(entityUuid, inv.name(), inv.argsJson(), json);
+            if (advice != null) json = appendFailureAdvice(json, advice);
         }
         complete(inv, json);
     }
@@ -194,11 +200,10 @@ public final class ToolDispatcher {
                 if (tool != null && tool.externalOnly()) {
                     Constants.LOG.warn("[numen-dispatch#{}] external-only tool '{}' refused (id={})",
                             entityUuid, inv.name(), inv.id());
-                    String externalOnlyJson = TaskResult.fail(
-                            "tool '" + tool.name() + "' is external-only (owner/MCP) and cannot be called by the companion").toJson();
-                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), externalOnlyJson);
-                    sink.onResult(inv, externalOnlyJson);
-                    LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(), "external-only tool refused");
+                    String externalOnlyReason = "tool '" + tool.name()
+                            + "' is external-only (owner/MCP) and cannot be called by the companion";
+                    rejectBeforeDispatch(inv, externalOnlyReason);
+                    LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(), externalOnlyReason);
                     continue;
                 }
                 if (tool != null && !callable.contains(tool.name())) {
@@ -206,22 +211,17 @@ public final class ToolDispatcher {
                     // 比让一次瞎填的调用真的动身体便宜。
                     Constants.LOG.info("[numen-dispatch#{}] tool '{}' not expanded yet (id={})",
                             entityUuid, inv.name(), inv.id());
-                    String notExpandedJson = TaskResult.fail(
-                            com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name())).toJson();
-                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), notExpandedJson);
-                    sink.onResult(inv, notExpandedJson);
+                    String reason = com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name());
+                    rejectBeforeDispatch(inv, reason);
                     // ★ 「她试过但用不了」是唯一能证明「去取过定义」的痕迹，
                     //   而监测台此前连这个都看不见（这一段在服务端那条路之前就返回了）。
-                    LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(),
-                            com.dwinovo.numen.agent.tool.ToolDisclosure.notExpanded(tool.name()));
+                    LocalToolCallLog.publishRejected(tool, entityUuid, inv.id(), reason);
                     continue;
                 }
                 if (tool == null) {
                     Constants.LOG.warn("[numen-dispatch#{}] LLM called unknown tool '{}' (id={})",
                             entityUuid, inv.name(), inv.id());
-                    String json = TaskResult.fail("unknown tool: " + inv.name()).toJson();
-                    LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
-                    sink.onResult(inv, json);
+                    rejectBeforeDispatch(inv, "unknown tool: " + inv.name());
                     continue;   // nothing in flight — drain the next queued call
                 }
                 inFlight.put(inv.id(), inv);
@@ -237,6 +237,11 @@ public final class ToolDispatcher {
                 //   实测漏掉 12 个（find_tools 内脑真调 118 次 / todowrite 33 次 / load_skill …）。
                 //   判据（反射 invoke 的声明类）与「为什么不用接口标记方法」见 LocalToolCallLog。
                 LocalToolCallLog.publishCall(tool, entityUuid, inv.id(), inv.argsJson());   // 2026-11-03：带 args_preview，load_skill 才能归因
+                if (LocalToolCallLog.runsLocally(tool)) {
+                    // Server tools are observed by ExecuteToolPayload. Only the local
+                    // invoke path fires here, so one production call is reported once.
+                    ToolCallObserver.fireWithArguments(entityUuid, inv.id(), inv.name(), inv.argsJson());
+                }
                 try {
                     tool.invoke(call);
                 } catch (RuntimeException ex) {
@@ -247,6 +252,8 @@ public final class ToolDispatcher {
                     // 本地工具会由 publishResult 记，别在这里写第二行。
                     if (!LocalToolCallLog.runsLocally(tool)) {
                         LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), thrownJson);
+                        String advice = ToolCallLoopWatch.onResult(entityUuid, inv.name(), inv.argsJson(), thrownJson);
+                        if (advice != null) thrownJson = appendFailureAdvice(thrownJson, advice);
                     }
                     complete(inv, thrownJson);
                 }
@@ -258,6 +265,13 @@ public final class ToolDispatcher {
         }
     }
 
+    private void rejectBeforeDispatch(ToolInvocation inv, String reason) {
+        String advice = ToolCallLoopWatch.onRejected(entityUuid, inv.name(), reason, inv.argsJson());
+        String json = TaskResult.fail(advice == null ? reason : reason + "\n" + advice).toJson();
+        LocalToolCallLog.publishSynthetic(entityUuid, inv.id(), inv.name(), json);
+        sink.onResult(inv, json);
+    }
+
     private void complete(ToolInvocation inv, String resultJson) {
         // 2026-11-12: providers may reuse IDs in a new turn. An old callback must
         // match the original invocation object, not consume the new call with that ID.
@@ -267,17 +281,38 @@ public final class ToolDispatcher {
         inFlight.remove(inv.id());
         deadlineMillis = 0;
         Long startedAt = startedAtMillis.remove(inv.id());
+        String outgoing = resultJson;
+        NumenTool completedTool = ToolRegistry.resolve(
+                com.dwinovo.numen.agent.tool.ToolAliases.resolve(inv.name()));
+        // Server results were already observed at ExecuteToolPayload; counting
+        // them again here would turn one failure into two.
+        if (LocalToolCallLog.runsLocally(completedTool)) {
+            String loopAdvice = ToolCallLoopWatch.onResult(entityUuid, inv.name(), inv.argsJson(), resultJson);
+            if (loopAdvice != null) outgoing = appendFailureAdvice(resultJson, loopAdvice);
+        }
         if (startedAt != null) {
             // ★ 2026-10-06 E0：本地工具的结果/耗时补报。服务端工具在 ExecuteToolPayload
             //   那一跳已经记过 tool_result，本调用内部按 runsLocally 判据对服务端工具是空操作。
             LocalToolCallLog.publishResult(ToolRegistry.resolve(inv.name()), entityUuid, inv.id(),
-                    System.currentTimeMillis() - startedAt, resultJson);
+                    System.currentTimeMillis() - startedAt, outgoing);
         }
         Constants.LOG.info("[numen-dispatch#{}] tool_result id={} tool={} (queued={}) → {}",
-                entityUuid, inv.id(), inv.name(), queue.size(), truncate(resultJson));
-        sink.onResult(inv, resultJson);
+                entityUuid, inv.id(), inv.name(), queue.size(), truncate(outgoing));
+        sink.onResult(inv, outgoing);
         // Advance unless drainNext is already looping (it picks up the next itself).
         if (!advancing) drainNext();
+    }
+
+    private static String appendFailureAdvice(String json, String advice) {
+        try {
+            var result = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
+            String previous = result.has("message") && result.get("message").isJsonPrimitive()
+                    ? result.get("message").getAsString() : "";
+            result.addProperty("message", previous + "\n" + advice);
+            return result.toString();
+        } catch (RuntimeException ignored) {
+            return json;
+        }
     }
 
     private static String truncate(String s) {

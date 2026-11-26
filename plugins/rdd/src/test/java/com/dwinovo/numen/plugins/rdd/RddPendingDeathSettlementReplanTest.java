@@ -62,7 +62,12 @@ class RddPendingDeathSettlementReplanTest {
                 + method(source, "    private static boolean deferDeathReplan(")
                 + method(source, "    static boolean consumeDeferredDeathReplan(")
                 + method(source, "    static boolean onDeathRecoverySettled(")
+                + method(source, "    private static TaskChain.ResourcePremiseInvalidation commitDeathResourcePremises(")
+                + method(source, "    private static TaskChain.ResourcePremiseInvalidation invalidateDeathResourcePremises(")
                 + method(source, "    private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,")
+                + method(source, "    private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,\n"
+                    + "                                         String soldierHint, boolean skipRecoverySideTask,\n"
+                    + "                                         Runnable acceptedSideEffect)")
                 + method(source, "    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,\n"
                     + "                                         String soldierHint, boolean skipRecoverySideTask)")
                 + method(source, "    private static boolean requestReplan(UUID companionId, String reason, RddReplanTransition.Trigger trigger,\n"
@@ -93,14 +98,23 @@ class RddPendingDeathSettlementReplanTest {
                 + detectorExcerpt(method(recovery, "    private int rsSafeCount("))
                 + method(source, "    static boolean requestReplan(UUID companionId, String reason) {")
                 + "static class SideTaskHost {\n"
+                + "static final ThreadLocal<Map<String,String>> TICK_IDENTITY=ThreadLocal.withInitial(HashMap::new);\n"
+                + "static final Map<UUID,Long> LAST_NUDGE_GAME_TIME=new HashMap<>();\n"
+                + "static void clearTerminalSleepCycle(String event,Map<String,Object> data) {}\n"
+                + "static boolean blocksMainline(UUID id) { return false; }\n"
+                + "static boolean nudgeAdvisoryEvent(String event,Map<String,Object> data,Map<UUID,Long> clock,String world,String session,java.util.function.BooleanSupplier send) { return false; }\n"
                 + method(Files.readString(plugin.resolve("SideTaskHost.java")).replace("\r\n", "\n"), "    private static void publish(")
-                + "static SideTaskWorldPort.PreparationFacts deathPreparationResult(UUID id, String payload) { throw new AssertionError(\"drop-only must not read preparation\"); }\n}\n"
+                + "static SideTaskWorldPort.PreparationFacts deathPreparationResult(UUID id, String payload) { "
+                + "return preparationReady ? new SideTaskWorldPort.PreparationFacts(SideTaskWorldPort.PreparationState.READY, "
+                + "\"current equipment ready\", Map.of(), Map.of()) : new SideTaskWorldPort.PreparationFacts(SideTaskWorldPort.PreparationState.MISSING, "
+                + "\"current equipment missing\", Map.of(), Map.of()); }\n}\n"
                 + TAIL;
         Path java = output.resolve("RddPlugin.java");
         Files.writeString(java, generated, StandardCharsets.UTF_8);
         Path dispatcher = output.resolve("CompanionTickDispatcher.java");
         Files.writeString(dispatcher, "package com.dwinovo.numen.task; public class CompanionTickDispatcher { "
                 + "public static void stopActive(Object body, String reason) { throw new AssertionError(\"drop-only has no body stop\"); } "
+                + "public static boolean isExecutingAction(java.util.UUID id) { return false; } "
                 + "public static Object currentTaskFor(java.util.UUID id) { return null; } }", StandardCharsets.UTF_8);
         List<String> args = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none", "-classpath",
                 location(TaskChain.class) + File.pathSeparator + location(Gson.class) + File.pathSeparator
@@ -142,6 +156,8 @@ class RddPendingDeathSettlementReplanTest {
         assertEquals(false, event("death_recovery_settled").get("replanRequested"), "deferred is not accepted");
         assertEquals(true, event("death_recovery_settled").get("replanDeferred"));
         assertEquals(false, f.terminal.get("prepareSettlementAccepted"));
+        assertEquals(Map.of("minecraft:emerald", 12), deferredLossItems(), "known loss keys travel with the handoff");
+        assertEquals(true, deferredLossKnown());
         assertEquals(true, event("side_task_resumed_mainline").get("mainlineResumed"),
                 "the actual drop-only engine currently releases without preparation ACK");
 
@@ -153,6 +169,44 @@ class RddPendingDeathSettlementReplanTest {
                 () -> assertFalse(trace().contains("kickoff_boundary"), "consume deferred loss before old kickoff boundary"),
                 () -> assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum(), "only one accepted request spends budget"),
                 () -> assertEquals(f.history, f.chain.satisfiedStages(), "completed historical stages remain facts"));
+    }
+
+    @Test void unverifiedDropOnlySettlementStillDefersKnownDeathLoss(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        String before = f.chain.toJson();
+        Map<String, Object> terminal = Map.of("deathSeq", "50", "terminal_reason", "executor_declined_recovery");
+
+        assertFalse((Boolean) call("onDeathRecoverySettled", new Class<?>[]{UUID.class, Map.class}, f.id, terminal));
+
+        assertEquals(before, f.chain.toJson(), "UNKNOWN terminal is not permission to keep or rewrite old premises");
+        assertEquals(RddDeathLedger.State.UNVERIFIED, RddDeathLedger.latest(f.id).state());
+        assertEquals(true, event("death_recovery_settled").get("replanDeferred"));
+        assertEquals(Map.of("minecraft:emerald", 12), deferredLossItems());
+        assertEquals(true, deferredLossKnown());
+        assertEquals(0, number("plannerRequests"));
+    }
+
+    @Test void unknownDeferredLossCommitsOnlyAfterLegalAdmission(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        String pending = f.chain.toJson();
+        var lossType = loader.loadClass(PACKAGE + "RddDeferredDeathReplan$ResourceLoss");
+        var unknownFactory = lossType.getDeclaredMethod("unknown", String.class);
+        unknownFactory.setAccessible(true);
+        Object unknownLoss = unknownFactory.invoke(null, "unknown_test");
+        assertTrue((Boolean) call("deferDeathReplan", new Class<?>[]{UUID.class, int.class, String.class, lossType},
+                f.id, 50, "unknown death loss", unknownLoss));
+        assertEquals(pending, f.chain.toJson());
+        assertEquals(false, deferredLossKnown());
+        assertEquals(Map.of(), deferredLossItems());
+
+        call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
+
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(SubtaskStatus.INVALIDATED, f.chain.currentSubtaskStatus());
+        assertTrue(f.chain.resourcePremiseReevaluationRequired());
+        assertEquals(1, number("plannerRequests"));
+        assertFalse(trace().contains("kickoff_boundary"));
+        assertTrue(deferred().isEmpty());
     }
 
     @Test void restoredRecoveringLossMustBeConsumedOnceAfterRealResumeBeforeOldKickoff(@TempDir Path dir) throws Exception {
@@ -177,6 +231,8 @@ class RddPendingDeathSettlementReplanTest {
                 () -> assertEquals(true, event("death_recovery_settled").get("replanDeferred"), "retain the rejected loss request"),
                 () -> assertEquals(1, number("plannerRequests"), "accepted death replan must reach planner exactly once"),
                 () -> assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus(), "do not resume the unchanged old plan"),
+                () -> assertTrue(f.chain.resourcePremiseReevaluationRequired(), "real recovery admission commits retained loss"),
+                () -> assertEquals(SubtaskStatus.INVALIDATED, f.chain.currentSubtaskStatus()),
                 () -> assertFalse(trace().contains("kickoff_boundary"), "consume after real resume but before old kickoff"),
                 () -> assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum(), "only one accepted request spends budget"),
                 () -> assertSame(f.chain, runtimes().get(f.id).chain(), "do not replace the restored owner"),
@@ -200,9 +256,94 @@ class RddPendingDeathSettlementReplanTest {
         f.finishDropsAbsent();
         assertEquals(1, number("plannerRequests"));
         assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(SubtaskStatus.INVALIDATED, f.chain.currentSubtaskStatus());
+        assertTrue(f.chain.resourcePremiseReevaluationRequired(), "accepted death request commits the loss premise");
         assertEquals(1, budget().values().stream().mapToInt(Integer::intValue).sum());
         assertEquals(f.history, f.chain.satisfiedStages());
         assertEquals(3, f.chain.planRevision(), "request alone does not install a new plan");
+    }
+
+    @Test void verifiedCurrentPreparationKeepsOriginalMainlineWithoutReplan(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        assertTrue(f.runtime.activateCurrentFromSnapshot(PlanningAssetSnapshot.from(Map.of(), f.runtime.assets())));
+        setField("preparationReady", true);
+        Map<String, Object> terminal = preparationTerminal(f, false);
+
+        assertTrue((Boolean) call("onDeathRecoverySettled", new Class<?>[]{UUID.class, Map.class}, f.id, terminal));
+
+        assertEquals(false, event("death_recovery_settled").get("replanRequested"));
+        assertEquals(PrimaryGoalStatus.ACTIVE, f.chain.primaryStatus());
+        assertEquals(SubtaskStatus.RUNNING, f.chain.currentSubtaskStatus());
+        assertFalse(f.chain.isPaused(f.chain.currentSubtask().id()));
+        assertEquals(0, number("plannerRequests"));
+        assertEquals(f.history, f.chain.satisfiedStages());
+    }
+
+    @Test void unverifiedPreparationSettlementRequestsReplanInsteadOfUnfreezingOldPlan(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        assertTrue(f.runtime.activateCurrentFromSnapshot(PlanningAssetSnapshot.from(Map.of(), f.runtime.assets())));
+        Map<String, Object> terminal = preparationTerminal(f, false);
+
+        assertFalse((Boolean) call("onDeathRecoverySettled", new Class<?>[]{UUID.class, Map.class}, f.id, terminal));
+
+        assertAll("unverified preparation is a recoverable death replan, not permission to continue bare",
+                () -> assertEquals(true, event("death_recovery_settled").get("replanRequested")),
+                () -> assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus()),
+                () -> assertEquals(1, number("plannerRequests")),
+                () -> assertEquals(f.history, f.chain.satisfiedStages()),
+                () -> assertEquals("trade-r3-0", f.chain.currentSubtask().id()));
+    }
+
+    @Test void recoveredDropsWithUnverifiedPreparationStillRequestRecoveryReplan(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        assertTrue(f.runtime.activateCurrentFromSnapshot(PlanningAssetSnapshot.from(Map.of(), f.runtime.assets())));
+        Map<String, Object> terminal = preparationTerminal(f, false);
+        terminal.put("terminal_reason", "drops_recovered");
+
+        assertFalse((Boolean) call("onDeathRecoverySettled", new Class<?>[]{UUID.class, Map.class}, f.id, terminal));
+
+        assertEquals(true, event("death_recovery_settled").get("replanRequested"),
+                "recovered pickup is not verified current equipment");
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(1, number("plannerRequests"));
+        assertEquals(f.history, f.chain.satisfiedStages());
+    }
+
+    @Test void stalePreparationIdentityPausesMatchingMainlineAndRequestsRecoverableReplan(@TempDir Path dir) throws Exception {
+        Fixture f = new Fixture(dir);
+        assertTrue(f.runtime.activateCurrentFromSnapshot(PlanningAssetSnapshot.from(Map.of(), f.runtime.assets())));
+        Map<String, Object> terminal = preparationTerminal(f, true);
+
+        assertFalse((Boolean) call("onDeathRecoverySettled", new Class<?>[]{UUID.class, Map.class}, f.id, terminal));
+
+        assertAll("stale body identity must not release the still-matching mainline",
+                () -> assertEquals("stale_recovery_identity", event("death_prepare_settlement_rejected").get("reason")),
+                () -> assertEquals(true, event("death_recovery_settled").get("replanRequested")),
+                () -> assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus()),
+                () -> assertEquals(1, number("plannerRequests")),
+                () -> assertEquals(f.history, f.chain.satisfiedStages()));
+        String after = f.chain.toJson();
+        assertFalse((Boolean) call("onDeathRecoverySettled", new Class<?>[]{UUID.class, Map.class}, f.id, terminal));
+        assertEquals(after, f.chain.toJson(), "duplicate stale terminal cannot spend another replan");
+        assertEquals(1, number("plannerRequests"));
+    }
+
+    private static Map<String, Object> preparationTerminal(Fixture f, boolean staleBody) {
+        SideTask task = f.engine.current(f.id).orElseThrow();
+        Map<String, String> data = new LinkedHashMap<>(task.data());
+        data.put(DeathPreparation.TARGETS, "[]");
+        data.put("prepare_scope", "DECLARED");
+        data.put("prepare_required", "true");
+        data.put("prepare_verified", "false");
+        data.put("prepare_plan_state", "REJECTED");
+        data.put("prepare_reason", "current equipment missing");
+        if (staleBody) data.put("prepare_death_seq", "49");
+        Map<String, Object> terminal = new LinkedHashMap<>();
+        terminal.put("deathSeq", "50");
+        terminal.put("terminal_reason", "executor_declined_recovery");
+        terminal.put("prepareReason", "current equipment missing");
+        terminal.put("prepareResume", DeathPreparation.resumePayload(task.withData(data)));
+        return terminal;
     }
 
     @Test void duplicateOldSettlementAfterPendingRefusalCannotHalfWriteOrSpend(@TempDir Path dir) throws Exception {
@@ -273,7 +414,12 @@ class RddPendingDeathSettlementReplanTest {
         // A stale old caller must not erase a subsequently deferred handoff for this replacement.
         TaskChain next = TaskChain.fromJson(f.chain.toJson());
         runtimes().put(f.id, new RddRuntime(next, new AssetRegistry()));
-        assertTrue((Boolean) call("deferDeathReplan", new Class<?>[]{UUID.class, int.class, String.class}, f.id, 50, "same death new owner"));
+        var lossType = loader.loadClass(PACKAGE + "RddDeferredDeathReplan$ResourceLoss");
+        var unknownFactory = lossType.getDeclaredMethod("unknown", String.class);
+        unknownFactory.setAccessible(true);
+        Object unknownLoss = unknownFactory.invoke(null, "test_unknown");
+        assertTrue((Boolean) call("deferDeathReplan", new Class<?>[]{UUID.class, int.class, String.class, lossType},
+                f.id, 50, "same death new owner", unknownLoss));
         Object pending = deferred().get(f.id);
         assertFalse(consume(f.id, f.chain));
         assertSame(pending, deferred().get(f.id));
@@ -357,6 +503,7 @@ class RddPendingDeathSettlementReplanTest {
     private static void assertRejectedRemainsParked(Fixture f) throws Exception {
         call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
         assertEquals(SubtaskStatus.FAILED, f.chain.currentSubtaskStatus());
+        assertFalse(f.chain.resourcePremiseReevaluationRequired(), "refused death request must not mutate resource premises");
         String parked = f.chain.toJson();
         // This invokes the real FAILED consumer + handleSubtaskFailure, not just assertions about maps.
         call("detectorAdmission", new Class<?>[]{UUID.class}, f.id);
@@ -376,6 +523,24 @@ class RddPendingDeathSettlementReplanTest {
         var f = loader.loadClass(PACKAGE + "RddDeferredDeathReplan").getDeclaredField("PENDING");
         f.setAccessible(true);
         return (Map<UUID, Object>) f.get(null);
+    }
+    private static Object deferredLoss() throws Exception {
+        Object pending = deferred().values().stream().findFirst().orElseThrow();
+        var accessor = pending.getClass().getDeclaredMethod("resourceLoss");
+        accessor.setAccessible(true);
+        return accessor.invoke(pending);
+    }
+    @SuppressWarnings("unchecked") private static Map<String, Integer> deferredLossItems() throws Exception {
+        Object loss = deferredLoss();
+        var accessor = loss.getClass().getDeclaredMethod("lostItems");
+        accessor.setAccessible(true);
+        return (Map<String, Integer>) accessor.invoke(loss);
+    }
+    private static boolean deferredLossKnown() throws Exception {
+        Object loss = deferredLoss();
+        var accessor = loss.getClass().getDeclaredMethod("known");
+        accessor.setAccessible(true);
+        return (boolean) accessor.invoke(loss);
     }
     @SuppressWarnings("unchecked") private static Map<UUID, RddRuntime> runtimes() throws Exception { return (Map<UUID, RddRuntime>) field("RUNTIMES"); }
     private static void setField(String name, Object value) throws Exception { var f = host.getDeclaredField(name); f.setAccessible(true); f.set(null, value); }
@@ -431,7 +596,8 @@ class RddPendingDeathSettlementReplanTest {
             assertEquals(51, RddDeathLedger.snapshot(id).nextSeq());
 
             SideTaskEngine original = engine();
-            assertTrue(original.startNow(new DeathRecoverySideTaskType(), id, this, token(), Map.of("death_seq", "50")));
+            assertTrue(original.startNow(new DeathRecoverySideTaskType(), id, this, token(), Map.of(
+                    "death_seq", "50", "lost_items", "minecraft:emerald=12")));
             assertTrue(DeathPreparation.choose(original, id, DeathRecoveryDecision.RECOVER_DROPS_FIRST));
             original.tick(id, this, token(), false);
             assertEquals(DeathRecoverySideTaskType.PHASE_RECOVER, original.current(id).orElseThrow().phase());
@@ -543,7 +709,7 @@ class RddPendingDeathSettlementReplanTest {
                 static final List<String> trace = new ArrayList<>();
                 static final Map<String,Map<String,Object>> events = new HashMap<>();
                 static int plannerRequests; static Path ledgerDir;
-                static boolean riskAllowed, captureFails;
+                static boolean riskAllowed, captureFails, preparationReady;
                 static Map<String,Integer> observedCounts = Map.of();
                 static Long inventoryAt = 1000L;
                 static Map<String,Integer> recomputedCounts;
@@ -553,7 +719,7 @@ class RddPendingDeathSettlementReplanTest {
                     RUNTIMES.clear(); RUNTIMES.put(id,rt); REPLAN_COUNTS.clear(); DEATH_SETTLEMENTS.clear();
                     trace.clear(); events.clear(); replanEnteredAt.clear(); plannerRequests=0; ledgerDir=dir;
                     RddDeferredDeathReplan.clearAll(); retries.clear(); gapParked.clear();
-                    riskAllowed=true; captureFails=false; observedCounts=Map.of();
+                    riskAllowed=true; captureFails=false; preparationReady=false; observedCounts=Map.of();
                     inventoryAt=1000L; recomputedCounts=null;
                 }
                 public static RddRuntime runtime(UUID id) { return RUNTIMES.get(id); }
@@ -570,9 +736,12 @@ class RddPendingDeathSettlementReplanTest {
                 static void saveRuntimes() {}
                 static boolean supervisionEnabled() { return true; }
                 static void clearBody(UUID id) { trace.add("clear_body"); }
-                static void nudge(UUID id,String text) { throw new AssertionError("unexpected automatic nudge: "+text); }
+                static boolean nudge(UUID id,String text) { throw new AssertionError("unexpected automatic nudge: "+text); }
                 static void finishResolvedPrimary(UUID id,RddRuntime rt) { throw new AssertionError("not optional food"); }
                 static Map<String,Integer> countInventory(Body body) { return observedCounts; }
+                static void captureStatBaselineAtStart(Body body,RddRuntime rt) { }
+                static class RddDetector { static void captureStatBaselineAtStart(Body body,RddRuntime rt) { } }
+                static boolean nudgeAllowed(UUID id) { return false; }
                 static boolean conditionMatches(Body body,Subtask task,Map<String,Integer> counts) { return HardCodedEvaluator.matches(task.condition(),counts); }
                 static boolean completeSubtask(Body body,RddRuntime rt,Subtask task) { throw new AssertionError("fixture unmet"); }
                 static class Watcher {

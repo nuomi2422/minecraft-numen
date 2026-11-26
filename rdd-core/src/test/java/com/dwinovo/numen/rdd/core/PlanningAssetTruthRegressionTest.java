@@ -31,11 +31,15 @@ class PlanningAssetTruthRegressionTest {
         inv(r, "minecraft:iron_sword", 1);
         r.invalidateByType("inventory_scan");          // 死亡：注册表全标 INVALID
 
-        // 复活后：实时扫描（truth）= 背包里真的又有铁套（或从未丢）
+        // 复活后：实时扫描（truth）= 背包里真的又有铁套（或从未丢）。
+        // 重新观测会清掉 INVALID；未重新观测的旧声明仍不得回 available。
         Map<String, Integer> liveScan = Map.of(
                 "minecraft:diamond_chestplate", 1,
                 "minecraft:iron_sword", 1,
                 "minecraft:wheat", 20);
+        inv(r, "minecraft:diamond_chestplate", 1);
+        inv(r, "minecraft:iron_sword", 1);
+        inv(r, "minecraft:wheat", 20);
 
         var snap = PlanningAssetSnapshot.from(liveScan, r);
         assertEquals(1, snap.availableCounts().get("minecraft:diamond_chestplate"),
@@ -75,8 +79,11 @@ class PlanningAssetTruthRegressionTest {
         inv(r, "minecraft:iron_sword", 1);
         r.invalidateByType("inventory_scan");          // 死亡：注册表全标 INVALID（含没捡回的那件）
 
-        // 复活后实时扫描：铁剑捡回了，钻石胸甲没捡回（真实世界已失）
+        // 复活后实时扫描：铁剑捡回了，钻石胸甲没捡回（真实世界已失）。
+        // 捡回项必须重新观测回 OBSERVED；未捡回项仍保持 INVALID/lost。
         Map<String, Integer> liveScan = Map.of("minecraft:iron_sword", 1, "minecraft:wheat", 20);
+        inv(r, "minecraft:iron_sword", 1);
+        inv(r, "minecraft:wheat", 20);
 
         var snap = PlanningAssetSnapshot.from(liveScan, 9000L, r);
         assertTrue(snap.availableCounts().containsKey("minecraft:iron_sword"), "真的持有的要保留");

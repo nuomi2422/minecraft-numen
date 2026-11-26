@@ -51,6 +51,7 @@ class RddInventoryProjectionTest {
         String harness = """
                 import java.util.*;
                 import com.dwinovo.numen.entity.NumenPlayer;
+                import com.dwinovo.numen.entity.DeathInventorySnapshot;
                 import net.minecraft.world.item.ItemStack;
                 import net.minecraft.core.registries.BuiltInRegistries;
                 public class InventoryProjectionHost {
@@ -97,6 +98,15 @@ class RddInventoryProjectionTest {
                     public NumenPlayer getInventory(){return this;}
                     public int getContainerSize(){return slots.length;}
                     public ItemStack getItem(int i){return slots[i];}
+                    public java.util.Optional<DeathInventorySnapshot> deathInventorySnapshot(){return java.util.Optional.empty();}
+                }
+                """);
+        put("com/dwinovo/numen/entity/DeathInventorySnapshot.java", """
+                package com.dwinovo.numen.entity;
+                import java.util.Map;
+                public class DeathInventorySnapshot {
+                    public boolean belongsTo(NumenPlayer body){return false;}
+                    public Map<String,Integer> inventory(){return Map.of();}
                 }
                 """);
         put("net/minecraft/world/item/Items.java", """

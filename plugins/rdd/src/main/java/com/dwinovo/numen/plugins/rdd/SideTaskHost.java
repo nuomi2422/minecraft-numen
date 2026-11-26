@@ -941,6 +941,11 @@ final class SideTaskHost {
                     return new DeathRecoveryFacts(DeathDropState.UNKNOWN, false, false, true,
                             "death batch is already closed or unavailable");
                 }
+                if (DeathRecoverySideTaskType.hasUnknownLostItems(task)) {
+                    return new DeathRecoveryFacts(DeathDropState.UNKNOWN, false,
+                            !RddRepairDispatch.backupFromBase(companionId).isEmpty(), false,
+                            "逐项损失未知：空表不证明无损失，也不证明永久丢失");
+                }
                 Map<String, Integer> inventory = RddDetector.countInventory(ap);
                 if (com.dwinovo.numen.rdd.core.RddDeathLedger.checkBatchRecovery(companionId, seq, inventory).satisfied()) {
                     return new DeathRecoveryFacts(DeathDropState.RECOVERED, false,

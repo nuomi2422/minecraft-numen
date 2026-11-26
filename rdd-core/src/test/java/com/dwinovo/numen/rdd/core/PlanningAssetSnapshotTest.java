@@ -4,6 +4,7 @@ import com.dwinovo.numen.rdd.api.AssetScope;
 import com.dwinovo.numen.rdd.api.Observation;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -24,23 +25,62 @@ class PlanningAssetSnapshotTest {
                 "实时扫描为唯一真相，注册表不得覆盖");
     }
 
-    @Test void invalidAssetsAreReportedLostButDoNotAffectAvailability() {
+    @Test void invalidAssetsAreLostAndNeverKeepStaleAvailableCounts() {
         AssetRegistry r = new AssetRegistry();
         inv(r, "minecraft:diamond_pickaxe", 1);
         r.invalidateByType("inventory_scan");        // 死亡失效
         var snap = PlanningAssetSnapshot.from(Map.of("minecraft:diamond_pickaxe", 1), r);
-        assertEquals(1, snap.availableCounts().get("minecraft:diamond_pickaxe"), "实时扫描仍持有 → 仍算可用");
-        assertEquals(1, snap.lostIds().size());      // 但如实记 lost 供提示
-        assertEquals("minecraft:diamond_pickaxe", snap.lostIds().get(0));
+        assertFalse(snap.availableCounts().containsKey("minecraft:diamond_pickaxe"),
+                "INVALID 资产不得继续保留旧 available 计数");
+        assertEquals(List.of("minecraft:diamond_pickaxe"), snap.lostIds());
+        assertFalse(snap.claims().containsKey("minecraft:diamond_pickaxe"));
     }
 
-    @Test void unknownAssetsAreReportedButDoNotAffectAvailability() {
+    @Test void unknownAssetsAreExplicitAndNeverKeepStaleAvailableCounts() {
         AssetRegistry r = new AssetRegistry();
         inv(r, "minecraft:bread", 3);
         r.markUnknown("minecraft:bread");
         var snap = PlanningAssetSnapshot.from(Map.of("minecraft:bread", 3), r);
-        assertEquals(3, snap.availableCounts().get("minecraft:bread"));
-        assertEquals(1, snap.unknownIds().size());
+        assertFalse(snap.availableCounts().containsKey("minecraft:bread"));
+        assertEquals(List.of("minecraft:bread"), snap.unknownIds());
+        assertFalse(snap.claims().containsKey("minecraft:bread"));
+    }
+
+    @Test void expiredScanDropsEveryOldCountAndMarksKnownIdsUnknown() {
+        AssetRegistry r = new AssetRegistry();
+        inv(r, "minecraft:iron_ingot", 2);
+        var snap = PlanningAssetSnapshot.from(Map.of("minecraft:iron_ingot", 7), 1_000L, r,
+                6_001L, 5_000L, null, 0L);
+        assertTrue(snap.availableCounts().isEmpty());
+        assertEquals(List.of("minecraft:iron_ingot"), snap.unknownIds());
+        assertEquals(PlanningAssetSnapshot.InventoryStatus.EXPIRED, snap.inventoryStatus());
+        assertFalse(snap.isInventoryKnown());
+    }
+
+    @Test void preDeathScanInsideDeathWindowIsUnknownNotAvailable() {
+        AssetRegistry r = new AssetRegistry();
+        var snap = PlanningAssetSnapshot.from(Map.of("minecraft:diamond_sword", 1), 900L, r,
+                1_000L, 5_000L, 1_000L, 5_000L);
+        assertTrue(snap.availableCounts().isEmpty());
+        assertEquals(List.of("minecraft:diamond_sword"), snap.unknownIds());
+        assertEquals(PlanningAssetSnapshot.InventoryStatus.PRE_DEATH_STALE, snap.inventoryStatus());
+    }
+
+    @Test void freshPostDeathScanCanReestablishAvailability() {
+        AssetRegistry r = new AssetRegistry();
+        var snap = PlanningAssetSnapshot.from(Map.of("minecraft:iron_sword", 1), 1_001L, r,
+                1_002L, 5_000L, 1_000L, 5_000L);
+        assertEquals(Map.of("minecraft:iron_sword", 1), snap.availableCounts());
+        assertEquals(PlanningAssetSnapshot.InventoryStatus.OBSERVED, snap.inventoryStatus());
+        assertTrue(snap.isInventoryKnown());
+    }
+
+    @Test void missingScanTimeIsExplicitlyUnknownInTimedSnapshot() {
+        var snap = PlanningAssetSnapshot.from(Map.of("minecraft:bread", 3), null, new AssetRegistry(),
+                1_000L, 5_000L, null, 0L);
+        assertTrue(snap.availableCounts().isEmpty());
+        assertEquals(List.of("minecraft:bread"), snap.unknownIds());
+        assertEquals(PlanningAssetSnapshot.InventoryStatus.UNKNOWN, snap.inventoryStatus());
     }
 
     @Test void emptyRegistryFallsBackToLiveScan() {

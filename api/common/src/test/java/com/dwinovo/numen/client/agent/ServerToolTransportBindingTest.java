@@ -58,6 +58,8 @@ class ServerToolTransportBindingTest {
         sources.put("com.dwinovo.numen.agent.tool.ToolRegistry","package com.dwinovo.numen.agent.tool; public class ToolRegistry {public static NumenTool resolve(String s){return ()->s;}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolAliases","package com.dwinovo.numen.agent.tool; public class ToolAliases {public static String resolve(String s){return s;}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolDisclosure","package com.dwinovo.numen.agent.tool; public class ToolDisclosure {public static String notExpanded(String s){return s;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch","package com.dwinovo.numen.agent.tool; public class ToolCallLoopWatch {public static String onRejected(Object...a){return null;} public static String onResult(Object...a){return null;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallObserver","package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fireWithArguments(Object...a){}}");
         sources.put("com.dwinovo.numen.api.Internal","package com.dwinovo.numen.api; public @interface Internal {}");
         sources.put("com.dwinovo.numen.api.CompanionEvent","package com.dwinovo.numen.api; public enum CompanionEvent {ABORT}");
         sources.put("com.dwinovo.numen.entity.CompanionEvents","package com.dwinovo.numen.entity; public class CompanionEvents {public static void fire(Object a,Object b){}}");

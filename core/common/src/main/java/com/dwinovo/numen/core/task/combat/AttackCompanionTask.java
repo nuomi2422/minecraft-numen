@@ -8,6 +8,7 @@ import com.dwinovo.numen.core.combat.Battlefield;
 import com.dwinovo.numen.core.combat.Loadout;
 import com.dwinovo.numen.core.combat.Haven;
 import com.dwinovo.numen.core.combat.Menace;
+import com.dwinovo.numen.core.combat.ShieldPlan;
 import com.dwinovo.numen.core.combat.Swing;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
 import com.dwinovo.numen.core.pathing.goals.GoalAvoidEntities;
@@ -25,6 +26,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
@@ -32,7 +34,9 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -130,6 +134,14 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
      */
     private List<Mob> hostiles = List.of();
 
+    /** 爬行者最近五刻的实际中心距；只用于把盾的生效延迟折成提前量。 */
+    private final Map<Integer, Deque<DistanceSample>> shieldDistanceHistory = new HashMap<>();
+
+    /** 这一帧最终要格挡的真实威胁；攻击/导航转头后再由它校正朝向。 */
+    private Entity shieldTarget;
+
+    private record DistanceSample(int tick, double distance) {}
+
     /**
      * 上一次搜索<b>搜不出路</b>的目标。够不着是拓扑性质,不是距离性质 —— 悬崖对面三格的
      * 骷髅离得很近却没有路,所以只有寻路自己说得清。
@@ -181,6 +193,8 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     @Override
     protected void onStart() {
         snapshotInventory(inventoryBaseline);
+        shieldDistanceHistory.clear();
+        shieldTarget = null;
         // 这场仗归我管了 —— 本能链别再为同一件事抢身体。空闲时自动解除,不必显式还。
         player.pauseReflex(MobDefenseChain.ID);
     }
@@ -200,6 +214,8 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
         AttackPlan.Move move = AttackPlan.decide(field, lastMove);
         lastMove = move;
         logMove(move, field);
+        // 先切模式再碰副手：进入 BOW 的当刻就放盾，不能等下一刻让 shootAt 卡在 isUsingItem。
+        bowFighting = move.action() == AttackPlan.Action.BOW;
 
         Entity chosen = move.foeId() == AttackPlan.NO_FOE ? null : liveEntity(move.foeId());
         if (chosen != target) {
@@ -219,18 +235,15 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             haven = null;   // 不再逃跑了:落点作废,下次要跑再重新挑
             stopNav();
         }
-        return switch (move.action()) {
-            case SKIRMISH -> {
-                bowFighting = false;
-                yield closeIn();
-            }
-            case BOW -> {
-                bowFighting = true;
-                yield bowFight();
-            }
+        TaskState state = switch (move.action()) {
+            case SKIRMISH -> closeIn();
+            case BOW -> bowFight();
             case DISENGAGE -> tickFlee();
             case DONE -> finish();
         };
+        // 挥击与导航都可能转头；格挡方向必须在身体这一帧的最后一次写入里校正。
+        faceShieldTarget();
+        return state;
     }
 
     // ==================== 局面 ====================
@@ -399,6 +412,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
 
     /** 打完了 —— 名单清空(点名),或没人再追她(无差别)。 */
     private TaskState finish() {
+        releaseShield();
         InputDriver.halt(player);
         stopNav();
         if (r.indiscriminate || !r.defeated().isEmpty()) {
@@ -432,47 +446,126 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     /**
      * 盾。与攻击、寻路并列的<b>第三层</b>,同样每刻问一次,同样不管别人在干嘛。
      *
-     * <pre>
-     * 弓战斗中                       → 不碰(拉弓和举盾抢同一个 useItem,原版硬约束)
-     * 有谁进了它的危险半径 且 盾能举 → 举
-     * 否则                           → 放
-     * </pre>
-     *
-     * <p>不看攻击冷却:原版举着盾照样能挥刀,两件事不冲突;也不拦攻击层 —— 那样两层就又
-     * 耦上了。举着会减速,代价认了:能挡住的那一下比早退半格值。盾被斧子破了会进冷却,
-     * 那时她就正常跑。
-     *
-     * <p>同行没有可抄的(AltoClef 完全没有用盾逻辑,Meteor 管的是怎么破<b>对手</b>的盾),
-     * 这套判据与 PR #13 的 {@code ShieldCombatPolicy} 同源,只是去掉了"冷却好了放盾"
-     * 那一步 —— 既然能边举边砍,那一步是多余的。
+     * <p>策略收在 {@link ShieldPlan}；这里只负责读真实身体、执行决定和最后校正朝向。
+     * 未点火爬行者按“三点火线 + 五刻实际接近距离”提前举；已点火爆炸不新举，
+     * 已有盾只作辅助格挡，脚步仍走原来的撤退/避让路径。
      */
     private void tickShield() {
-        if (bowFighting) {
-            return;
-        }
         boolean raised = shieldRaised();
-        boolean threatened = false;
-        for (var mob : hostiles) {
-            if (Menace.tooClose(mob, player)) {
-                threatened = true;
-                break;
+        ItemStack available = availableShield();
+        boolean shieldUsable = available.is(Items.SHIELD)
+                && !player.getCooldowns().isOnCooldown(available.getItem());
+        boolean usingOtherItem = player.isUsingItem() && !raised;
+        ShieldPlan.Plan plan = ShieldPlan.decide(
+                bowFighting ? ShieldPlan.Mode.BOW : ShieldPlan.Mode.MELEE,
+                shieldUsable, usingOtherItem, raised, shieldThreats(),
+                target == null ? ShieldPlan.NO_TARGET : target.getId());
+        shieldTarget = null;
+        switch (plan.decision()) {
+            case RAISE -> {
+                Entity threat = liveEntity(plan.targetId());
+                if (threat == null) return;
+                ItemStack shield = player.getOffhandItem().is(Items.SHIELD)
+                        ? player.getOffhandItem() : equipShield();
+                if (!shield.is(Items.SHIELD)
+                        || player.getCooldowns().isOnCooldown(shield.getItem())) {
+                    return;   // 没盾、副手被占用、或破盾冷却中：不偷换物品，正常走位
+                }
+                player.startUsingItem(InteractionHand.OFF_HAND);
+                shieldTarget = threat;
             }
+            case HOLD -> shieldTarget = liveEntity(plan.targetId());
+            case RELEASE -> releaseShield();
+            case WAIT, PROCEED -> { }
         }
-        if (!threatened) {
-            if (raised) {
-                player.releaseUsingItem();
+    }
+
+    /** 当前帧的真实威胁快照；中心距与触发半径都用同一坐标，避免格心补偿推迟举盾。 */
+    private List<ShieldPlan.Threat> shieldThreats() {
+        List<ShieldPlan.Threat> threats = new ArrayList<>();
+        var presentCreepers = new java.util.HashSet<Integer>();
+        for (Mob mob : hostiles) {
+            if (!mob.isAlive() || mob.isRemoved()) continue;
+            double radius;
+            if (mob instanceof Creeper) {
+                presentCreepers.add(mob.getId());
+                double approach = creeperApproachPerTick(mob);
+                radius = Menace.armed(mob)
+                        ? Menace.dangerRadius(mob, player)
+                        : ShieldPlan.triggerRadius(Menace.CREEPER_IGNITION_DISTANCE, approach);
+            } else {
+                radius = Menace.dangerRadius(mob, player);
             }
+            threats.add(new ShieldPlan.Threat(mob.getId(), player.distanceToSqr(mob),
+                    radius * radius, !Menace.armed(mob), true));
+        }
+        shieldDistanceHistory.keySet().retainAll(presentCreepers);
+        return threats;
+    }
+
+    /** 最近五刻实测接近速度与当前相对速度取较大值；不把速度属性直接当格/刻。 */
+    private double creeperApproachPerTick(Mob creeper) {
+        double distance = player.distanceTo(creeper);
+        Deque<DistanceSample> history = shieldDistanceHistory.computeIfAbsent(
+                creeper.getId(), ignored -> new ArrayDeque<>());
+        while (!history.isEmpty()
+                && player.tickCount - history.peekFirst().tick() > ShieldPlan.BLOCK_DELAY_TICKS) {
+            history.removeFirst();
+        }
+        double observed = 0.0;
+        if (!history.isEmpty()) {
+            DistanceSample oldest = history.peekFirst();
+            int elapsed = player.tickCount - oldest.tick();
+            if (elapsed > 0) observed = (oldest.distance() - distance) / elapsed;
+        }
+        history.addLast(new DistanceSample(player.tickCount, distance));
+
+        Vec3 offset = creeper.position().subtract(player.position());
+        double horizontalSqr = offset.x * offset.x + offset.z * offset.z;
+        if (horizontalSqr < 1.0e-6) return Math.max(0.0, observed);
+        double inverse = 1.0 / Math.sqrt(horizontalSqr);
+        Vec3 relative = player.getDeltaMovement().subtract(creeper.getDeltaMovement());
+        double current = (relative.x * offset.x + relative.z * offset.z) * inverse;
+        return Math.max(0.0, Math.max(observed, current));
+    }
+
+    /** 副手已有盾就用它；只有副手真空时才从背包取一面，不覆盖玩家放的任何物品。 */
+    private ItemStack availableShield() {
+        ItemStack offhand = player.getOffhandItem();
+        if (!offhand.isEmpty()) {
+            return offhand.is(Items.SHIELD) ? offhand : ItemStack.EMPTY;
+        }
+        var inventory = player.getInventory();
+        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.is(Items.SHIELD)) return stack;
+        }
+        return ItemStack.EMPTY;
+    }
+
+    /** 攻击与导航都可能覆盖视线；已有格挡在每帧最后重新朝向选中的真实威胁。 */
+    private void faceShieldTarget() {
+        if (!shieldRaised() || shieldTarget == null || shieldTarget.isRemoved()
+                || !shieldTarget.isAlive()) {
             return;
         }
-        if (raised || player.isUsingItem()) {
-            return;   // 已经举着,或者手上占着别的东西
-        }
-        ItemStack shield = player.getOffhandItem().is(Items.SHIELD)
-                ? player.getOffhandItem() : equipShield();
-        if (shield.isEmpty() || player.getCooldowns().isOnCooldown(shield.getItem())) {
-            return;   // 没盾,或者被斧子破了还在冷却 —— 正常跑
-        }
-        player.startUsingItem(InteractionHand.OFF_HAND);
+        float oldYaw = player.getYRot();
+        ShieldPlan.MovementInput movement = new ShieldPlan.MovementInput(player.xxa, player.zza);
+        boolean sprinting = player.isSprinting();
+        InputDriver.lookAt(player, shieldTarget.getEyePosition());
+        if (movement.xxa() == 0.0f && movement.zza() == 0.0f) return;
+
+        // travel 按当前 yaw 解释 xxa/zza；只转头会把撤退路径改成朝威胁走。
+        ShieldPlan.MovementInput preserved = ShieldPlan.preserveWorldDirection(
+                movement, oldYaw, player.getYRot());
+        player.xxa = preserved.xxa();
+        player.zza = preserved.zza();
+        player.setSprinting(sprinting);
+    }
+
+    private void releaseShield() {
+        if (shieldRaised()) player.releaseUsingItem();
+        shieldTarget = null;
     }
 
     private boolean shieldRaised() {
@@ -963,6 +1056,7 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     private void beginLoot(Vec3 where) {
         stopNav();
         abortShot();
+        releaseShield();
         InputDriver.halt(player);
         loot.begin(BlockPos.containing(where != null ? where : player.position()));
         target = null;
@@ -1025,8 +1119,15 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
     }
 
     @Override
+    public void stop(NumenPlayer companion, StopReason why) {
+        releaseShield();
+        super.stop(companion, why);
+    }
+
+    @Override
     protected void cleanup() {
         abortShot();
+        releaseShield();
         InputDriver.halt(player);
         player.setShiftKeyDown(false);
         super.cleanup();

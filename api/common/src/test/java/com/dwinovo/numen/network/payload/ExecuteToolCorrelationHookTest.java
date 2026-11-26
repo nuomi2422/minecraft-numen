@@ -37,9 +37,22 @@ class ExecuteToolCorrelationHookTest {
         s.put("com.dwinovo.numen.agent.tool.NumenTool", "package com.dwinovo.numen.agent.tool; public interface NumenTool {void onServerCall(String id,com.google.gson.JsonObject args,com.dwinovo.numen.entity.NumenPlayer p,java.util.function.Consumer<String> r);}");
         s.put("com.dwinovo.numen.agent.tool.OwnerAuthenticatedTool", Files.readString(root.resolve("api/common/src/main/java/com/dwinovo/numen/agent/tool/OwnerAuthenticatedTool.java")));
         s.put("com.dwinovo.numen.agent.tool.ToolRegistry", "package com.dwinovo.numen.agent.tool; public class ToolRegistry {public static NumenTool get(String n){return com.dwinovo.numen.network.payload.Fixture.mode.equals(\"unknown_tool\")?null:(id,a,p,r)->{com.dwinovo.numen.network.payload.Fixture.toolArgs.add(a.toString()); if(!com.dwinovo.numen.network.payload.Fixture.mode.equals(\"no_reply\")) r.accept(com.dwinovo.numen.network.payload.Fixture.response);};}} ");
-        s.put("com.dwinovo.numen.agent.tool.ToolCallObserver", "package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fire(java.util.UUID u,String i,String n,int l){}} ");
-        s.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch", "package com.dwinovo.numen.agent.tool; public class ToolCallLoopWatch {public static String onRejected(java.util.UUID u,String t,String m,String a){com.dwinovo.numen.network.payload.Fixture.loop.add(m+\"|\"+a);return null;} public static void onSucceeded(java.util.UUID u,String t){}} ");
-        s.put("com.dwinovo.numen.task.TaskResult", "package com.dwinovo.numen.task; public record TaskResult(String message) {public static TaskResult fail(String s){return new TaskResult(s);} public String toJson(){return \"{success:false,message:\"+message+\"}\";}} ");
+        s.put("com.dwinovo.numen.agent.tool.ToolCallObserver", "package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fireWithArguments(java.util.UUID u,String i,String n,String a){}} ");
+        s.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch", """
+                package com.dwinovo.numen.agent.tool;
+                public class ToolCallLoopWatch {
+                  public static String onRejected(java.util.UUID u,String t,String m,String a){com.dwinovo.numen.network.payload.Fixture.loop.add(m+"|"+a);return null;}
+                  public static void onSucceeded(java.util.UUID u,String t,String a){com.dwinovo.numen.network.payload.Fixture.successes.add(t+"|"+a);}
+                  public static String onResult(java.util.UUID u,String t,String a,String r){if(r.contains("\\\"async\\\":true"))return null;if(r.contains("\\\"success\\\":true"))onSucceeded(u,t,a);else com.dwinovo.numen.network.payload.Fixture.loop.add(t+"|result");return null;}
+                }
+                """);
+        s.put("com.dwinovo.numen.task.TaskResult", """
+                package com.dwinovo.numen.task;
+                public record TaskResult(String message) {
+                  public static TaskResult fail(String s){return new TaskResult(s);}
+                  public String toJson(){var o=new com.google.gson.JsonObject();o.addProperty("success",false);o.addProperty("message",message);return o.toString();}
+                }
+                """);
         s.put("com.dwinovo.numen.network.payload.TaskResultPayload", "package com.dwinovo.numen.network.payload; public record TaskResultPayload(java.util.UUID entityUuid,String toolCallId,String resultJson) {} ");
         s.put("com.dwinovo.numen.platform.Services", "package com.dwinovo.numen.platform; public class Services {public static final Network NETWORK=new Network(); public static class Network {public void sendToPlayer(net.minecraft.server.level.ServerPlayer p,com.dwinovo.numen.network.payload.TaskResultPayload v){com.dwinovo.numen.network.payload.Fixture.replies.add(v);}}} ");
         s.put("com.dwinovo.numen.monitor.MonitoringJournal", "package com.dwinovo.numen.monitor; public class MonitoringJournal {public static MonitoringJournal get(){return new MonitoringJournal();} public void publish(String c,String t,java.util.Map<String,Object> m){com.dwinovo.numen.network.payload.Fixture.journal.add(m.toString());} public void publish(String c,String t,java.util.Map<String,Object> m,com.dwinovo.numen.api.WorldContextStamp.Token token){publish(c,t,m);}} ");
@@ -49,7 +62,7 @@ class ExecuteToolCorrelationHookTest {
                 public class Fixture {
                   public static String mode; public static String response; public static final List<String> logs=new ArrayList<>(), loop=new ArrayList<>(), journal=new ArrayList<>();
                   public static final List<TaskResultPayload> replies=new ArrayList<>();
-                  public static final List<String> toolArgs=new ArrayList<>(), receipts=new ArrayList<>(), binds=new ArrayList<>();
+                  public static final List<String> toolArgs=new ArrayList<>(), receipts=new ArrayList<>(), binds=new ArrayList<>(), successes=new ArrayList<>();
                   public static final com.dwinovo.numen.api.SyncSkillCorrelation correlation = new com.dwinovo.numen.api.SyncSkillCorrelation() {
                     public Binding bind(String id, UUID owner, UUID companion, com.dwinovo.numen.api.WorldContextStamp.Token token, String wire, String tool) {
                       binds.add(owner+"|"+companion+"|"+wire+"|"+tool+"|"+token.epoch());
@@ -60,9 +73,9 @@ class ExecuteToolCorrelationHookTest {
                   };
                   public static Map<String,Object> run(String m,String args) { return runResponse(m,args,args); }
                   public static Map<String,Object> runResponse(String m,String args,String result) {
-                    mode=m; response=result; logs.clear(); loop.clear(); journal.clear(); replies.clear(); toolArgs.clear(); receipts.clear(); binds.clear();
+                    mode=m; response=result; logs.clear(); loop.clear(); journal.clear(); replies.clear(); toolArgs.clear(); receipts.clear(); binds.clear(); successes.clear();
                     UUID id=new UUID(0,2); ExecuteToolPayload.handle(new ExecuteToolPayload(id,"call-1",m.equals("wrong_tool")?"other":"tool",args),new net.minecraft.server.level.ServerPlayer());
-                    return Map.of("logs",List.copyOf(logs),"loop",List.copyOf(loop),"journal",List.copyOf(journal),"receipts",List.copyOf(receipts),"binds",List.copyOf(binds),"toolArgs",List.copyOf(toolArgs),"replies",replies.stream().map(r->r.entityUuid()+"|"+r.toolCallId()+"|"+r.resultJson()).toList());
+                    return Map.of("logs",List.copyOf(logs),"loop",List.copyOf(loop),"journal",List.copyOf(journal),"receipts",List.copyOf(receipts),"binds",List.copyOf(binds),"toolArgs",List.copyOf(toolArgs),"successes",List.copyOf(successes),"replies",replies.stream().map(r->r.entityUuid()+"|"+r.toolCallId()+"|"+r.resultJson()).toList());
                   }
                 }
                 """);
@@ -96,6 +109,17 @@ class ExecuteToolCorrelationHookTest {
         assertEquals(List.of("UNKNOWN"),async.get("receipts"));
         assertEquals(List.of("UNKNOWN"),run("no_reply",args).get("receipts"));
     }
+    @Test void failedAndAsyncRunningRepliesDoNotClearFailureEvidence() throws Exception {
+        var failed=response("success","{\"block\":\"stone\"}","{\"success\":false,\"message\":\"blocked\"}");
+        assertEquals(List.of(),failed.get("successes"));
+        assertEquals(List.of("tool|result"),failed.get("loop"));
+        var async=response("success","{\"block\":\"stone\"}","{\"success\":true,\"data\":{\"async\":true}}");
+        assertEquals(List.of(),async.get("successes"),"accepted RUNNING is not a terminal success");
+        assertEquals(List.of(),async.get("loop"),"accepted RUNNING is not a failure either");
+        var success=response("success","{\"block\":\"stone\"}","{\"success\":true}");
+        assertEquals(List.of("tool|{\"block\":\"stone\"}"),success.get("successes"));
+    }
+
     @Test void ownerAndOrdinaryCall() throws Exception {
         var denied=run("non_owner","{\"selection_id\":\"secret\"}");
         assertEquals(List.of(),denied.get("binds")); assertEquals(List.of(),denied.get("toolArgs"));

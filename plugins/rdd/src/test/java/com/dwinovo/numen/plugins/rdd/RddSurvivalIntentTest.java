@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -289,14 +290,49 @@ class RddSurvivalIntentTest {
         List<Runnable> queued = new ArrayList<>();
         guard.dispatch(ticket, queued::add, () -> fail("死亡前的旧规划不得应用"));
         RddReplanTransition.onDeath(f.id, f.chain, () -> guard.replace(f.id));
-        assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        var recovery = RddReplanTransition.request(f.chain, RddReplanTransition.Trigger.DEATH,
+                "death recovery re-evaluates current capability", f.counts, f.key(), LIMIT, f.callbacks::incrementAndGet);
+        assertTrue(recovery.accepted(), "the held pre-death plan must have a bounded recovery replan exit");
+        f.replacePlan();
         assertTrue(f.chain.activateCurrent(Map.of()));
-        Object current = new Object();
-        assertTrue(f.request(current).accepted());
-        f.applyPlan(current);
         queued.forEach(Runnable::run);
         RddReplanTransition.markApplied(f.id, old, 999);
-        assertEquals(RddReplanTransition.Outcome.DUPLICATE_SURVIVAL_PENDING, f.request(new Object()).outcome());
+        assertFalse(RddReplanTransition.hasSurvivalIntent(f.id));
+        assertTrue(f.request(new Object()).accepted(), "a new body may evaluate a new survival risk");
+    }
+
+    @Test
+    void deathKeepsPendingReplanningHeldUntilProtectedRecoveryReevaluatesIt() {
+        Fixture f = new Fixture(UUID.randomUUID(), "death-replanning-held");
+        Object old = new Object();
+        assertTrue(f.request(old).accepted());
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        RddCallbackGuard guard = new RddCallbackGuard();
+        var ticket = guard.replace(f.id);
+        List<Runnable> queued = new ArrayList<>();
+        guard.dispatch(ticket, queued::add, () -> fail("death must invalidate the old body plan"));
+
+        RddReplanTransition.onDeath(f.id, f.chain, () -> guard.replace(f.id));
+
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus(),
+                "death must not silently resume the pre-death plan before recovery verifies current capability");
+        queued.forEach(Runnable::run);
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+    }
+
+    @Test
+    void failedPlanningCallbackCannotUnfreezeResourceInvalidatedDeathPlan() {
+        Fixture f = new Fixture(UUID.randomUUID(), "death-resource-invalidated");
+        if (f.chain.currentSubtaskStatus() == SubtaskStatus.PENDING) f.chain.startCurrent();
+        f.chain.invalidateResourcePremises(Set.of("minecraft:furnace"), "death snapshot lost tool");
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+
+        RddReplanTransition.abortPlan(f.id, new Object(), f.chain);
+
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
+        assertEquals(SubtaskStatus.INVALIDATED, f.chain.currentSubtaskStatus());
+        assertTrue(f.chain.resourcePremiseReevaluationRequired());
     }
 
     @Test
@@ -429,7 +465,7 @@ class RddSurvivalIntentTest {
         RddReplanTransition.observeSafe(f.id);
         RddReplanTransition.onDeath(f.id, f.chain, () -> guard.replace(f.id));
         queued.forEach(Runnable::run);
-        assertEquals(PrimaryGoalStatus.PENDING, f.chain.primaryStatus());
+        assertEquals(PrimaryGoalStatus.REPLANNING, f.chain.primaryStatus());
     }
 
     @Test

@@ -73,9 +73,11 @@ class ServerToolTransportReplyIsolationTest {
         sources.put("net.minecraft.client.player.AbstractClientPlayer",
                 "package net.minecraft.client.player; public class AbstractClientPlayer {}");
         sources.put("com.google.gson.JsonElement",
-                "package com.google.gson; public class JsonElement {}");
+                "package com.google.gson; public class JsonElement {public boolean isJsonPrimitive(){return false;} public String getAsString(){return \"\";}}");
         sources.put("com.google.gson.JsonObject",
-                "package com.google.gson; public class JsonObject {"
+                "package com.google.gson; public class JsonObject extends JsonElement {"
+                + " public boolean has(String key){return false;}"
+                + " public JsonElement get(String key){return new JsonElement();}"
                 + " public JsonElement remove(String key){return null;}"
                 + " public JsonObject addProperty(String key,String value){return this;} }");
         sources.put("com.google.gson.JsonParser",
@@ -92,6 +94,10 @@ class ServerToolTransportReplyIsolationTest {
                 "package com.dwinovo.numen.agent.tool; public class LocalToolCallLog {public static void publishTransportBinding(java.util.UUID companionId,String modelId,String wireId,String tool){} public static boolean runsLocally(NumenTool t){return false;} public static void publishSynthetic(Object...a){} public static void publishResult(Object...a){} public static void publishCall(Object...a){} public static void publishRejected(Object...a){}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolDisclosure",
                 "package com.dwinovo.numen.agent.tool; public class ToolDisclosure {public static String notExpanded(String s){return s;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch",
+                "package com.dwinovo.numen.agent.tool; public class ToolCallLoopWatch {public static String onRejected(Object...a){return null;} public static String onResult(Object...a){return null;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallObserver",
+                "package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fireWithArguments(Object...a){}}");
         sources.put("com.dwinovo.numen.task.TaskResult",
                 "package com.dwinovo.numen.task; public record TaskResult(String text) {public static TaskResult fail(String s){return new TaskResult(s);} public String toJson(){return text;}}");
         sources.put("com.dwinovo.numen.api.CompanionEvent",

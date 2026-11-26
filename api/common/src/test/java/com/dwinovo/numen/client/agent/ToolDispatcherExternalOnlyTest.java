@@ -54,10 +54,7 @@ class ToolDispatcherExternalOnlyTest {
                 "package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log(); public static class Log {public void info(String s,Object...a){} public void warn(String s,Object...a){}}}");
         sources.put("net.minecraft.client.player.AbstractClientPlayer",
                 "package net.minecraft.client.player; public class AbstractClientPlayer {}");
-        sources.put("com.google.gson.JsonObject",
-                "package com.google.gson; public class JsonObject {}");
-        sources.put("com.google.gson.JsonParser",
-                "package com.google.gson; public class JsonParser {public static JsonParser parseString(String s){return new JsonParser();} public JsonObject getAsJsonObject(){return new JsonObject();}}");
+        sources.put("com.dwinovo.numen.api.Internal", "package com.dwinovo.numen.api; public @interface Internal {}");
         sources.put("com.dwinovo.numen.agent.tool.ClientToolContext",
                 "package com.dwinovo.numen.agent.tool; public record ClientToolContext(net.minecraft.client.player.AbstractClientPlayer entity,java.util.UUID entityUuid) implements ToolAnchor {}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool",
@@ -68,6 +65,10 @@ class ToolDispatcherExternalOnlyTest {
                 "package com.dwinovo.numen.agent.tool; public class ToolAliases {public static String resolve(String s){return s;}}");
         sources.put("com.dwinovo.numen.agent.tool.LocalToolCallLog",
                 "package com.dwinovo.numen.agent.tool; public class LocalToolCallLog {public static boolean runsLocally(NumenTool t){return false;} public static void publishSynthetic(Object...a){} public static void publishResult(Object...a){} public static void publishCall(Object...a){} public static void publishRejected(Object...a){}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch",
+                "package com.dwinovo.numen.agent.tool; public class ToolCallLoopWatch {public static String onRejected(Object...a){return null;} public static String onResult(Object...a){return null;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallObserver",
+                "package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fireWithArguments(Object...a){}}");
         sources.put("com.dwinovo.numen.agent.tool.ToolDisclosure",
                 "package com.dwinovo.numen.agent.tool; public class ToolDisclosure {public static String notExpanded(String s){return s;}}");
         sources.put("com.dwinovo.numen.task.TaskResult",
@@ -138,7 +139,9 @@ class ToolDispatcherExternalOnlyTest {
             }
             """);
 
-        List<String> args = new ArrayList<>(List.of("-d", build.toString()));
+        URL gson = com.google.gson.JsonParser.class.getProtectionDomain().getCodeSource().getLocation();
+        List<String> args = new ArrayList<>(List.of("-encoding", "UTF-8", "-proc:none", "-classpath",
+                Path.of(gson.toURI()).toString(), "-d", build.toString()));
         for (var e : sources.entrySet()) {
             Path file = build.resolve(e.getKey().replace('.', '/') + ".java");
             Files.createDirectories(file.getParent());

@@ -64,12 +64,17 @@ public final class DeathRecoverySideTaskTrigger implements SideTaskTrigger {
         data.put("dimension", dimension == null ? "" : dimension);
         data.put("death_at", deathAt == null ? "" : deathAt);
         if (lostItems != null && !lostItems.isEmpty()) {
+            data.put("lost_items_state", "TRACKED");
             StringBuilder items = new StringBuilder();
             for (Map.Entry<String, Integer> e : lostItems.entrySet()) {
                 if (items.length() > 0) items.append(',');
                 items.append(e.getKey()).append('=').append(Math.max(0, e.getValue()));
             }
             data.put("lost_items", items.toString());
+        } else {
+            // The death event is real even when the instantaneous item table is empty.
+            // Empty means UNKNOWN (for example the vanilla clear raced the observation), not no loss.
+            data.put("lost_items_state", "UNKNOWN");
         }
         PENDING.compute(companionId, (id, queue) -> {
             Deque<Map<String, String>> q = queue == null ? new ArrayDeque<>() : queue;

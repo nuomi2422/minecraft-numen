@@ -1,6 +1,9 @@
 package com.dwinovo.numen.agent.tool;
 
 import com.dwinovo.numen.monitor.MonitoringJournal;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -37,13 +40,13 @@ import java.util.regex.Pattern;
  *
  * <h2>判定口径
  * <ul>
- *   <li>计数是 <b>per(同伴, 工具)</b> 的，指纹 = 错误原因里的<b>数字全部归一</b>
- *       （坐标、距离、id 都算数字）。所以"about 24 blocks away"和"about 40 blocks away"
- *       算同一次循环，"BEGIN_ARRAY at $.block_ids"和"at $.moves"不会。</li>
- *   <li>该工具一旦<b>成功</b>，计数清零。</li>
+ *   <li>计数是 per(同伴, 工具, 规范参数, 错误原因) 的；参数只按 JSON 稳定键序哈希，
+ *       坐标、目标、数量和数组顺序保留。错误原因里的数字仍归一为同一类错误。</li>
+ *   <li>该工具一旦<b>成功</b>，计数清零（只清这个工具，不动别的）。这是错误诊断的连续性，
+ *       不是 RDD 世界进展证明；异步 RUNNING 不得据此刷新进展预算。</li>
  *   <li>超过 {@link #STALE_MS} 没动静的条目视为过期 —— 对话可能早就换题了，
  *       留着会把无关的历史算进循环。</li>
- *   <li>提醒只在第 3 次和之后每 3 次发一次，不每条都发：否则光提醒就把上下文吃掉了。</li>
+ *   <li>同一参数+错误只在第 3 次提醒一次，不每条都发；后续重复保持静默，直到成功或过期。</li>
  * </ul>
  *
  * <h2>已知代价
@@ -56,8 +59,6 @@ public final class ToolCallLoopWatch {
 
     /** 第几次同因失败开始提醒模型。 */
     public static final int WARN_AT = 3;
-    /** 提醒之后的重复节奏：第 3、6、9…次。 */
-    private static final int WARN_EVERY_AFTER = 3;
     /** 多久没动静就算过期（毫秒）。 */
     private static final long STALE_MS = 5L * 60_000L;
     private static final int MAX_TRACKED = 512;
@@ -66,7 +67,7 @@ public final class ToolCallLoopWatch {
     private static final Pattern NUMBER = Pattern.compile("\\b\\d+(?:\\.\\d+)?\\b");
     private static final Pattern SPACE = Pattern.compile("\\s+");
 
-    private record Hit(String fingerprint, String reason, String args, int count, long lastMs) {}
+    private record Hit(String fingerprint, String reason, int count, long lastMs) {}
 
     private static final Map<String, Hit> HITS = new ConcurrentHashMap<>();
 
@@ -79,25 +80,76 @@ public final class ToolCallLoopWatch {
      */
     public static String onRejected(UUID companionId, String tool, String reason, String argsJson) {
         if (companionId == null || tool == null || tool.isBlank()) return null;
-        String key = companionId + "|" + tool;
-        long now = System.currentTimeMillis();
+        String argsHash = ToolCallFingerprint.hashArguments(argsJson);
+        if (argsHash == null) return null; // malformed/unknown arguments are not repeat evidence
         String fp = fingerprint(reason);
+        String key = companionId + "|" + tool + "|" + argsHash + "|" + fp;
+        long now = System.currentTimeMillis();
         Hit prev = HITS.get(key);
         int count = 1;
         if (prev != null && now - prev.lastMs() <= STALE_MS && prev.fingerprint().equals(fp)) {
             count = prev.count() + 1;
         }
-        HITS.put(key, new Hit(fp, clip(reason, MAX_SAMPLE_CHARS), clip(argsJson, MAX_SAMPLE_CHARS), count, now));
+        HITS.put(key, new Hit(fp, clip(reason, MAX_SAMPLE_CHARS), count, now));
         evictIfCrowded();
-        if (count < WARN_AT || (count - WARN_AT) % WARN_EVERY_AFTER != 0) return null;
-        publishLoop(companionId, tool, fp, reason, argsJson, count);
+        if (count < WARN_AT || prev != null && prev.count() >= WARN_AT) return null;
+        publishLoop(companionId, tool, fp, reason, argsHash, count);
         return buildAdvice(tool, reason, count);
     }
 
-    /** 该工具成功了 → 计数清零（只清这个工具，不动别的）。 */
+    /** Legacy tool-wide clear retained for compatibility; production result handling uses the action overload. */
     public static void onSucceeded(UUID companionId, String tool) {
         if (companionId == null || tool == null) return;
-        HITS.remove(companionId + "|" + tool);
+        String prefix = companionId + "|" + tool + "|";
+        HITS.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    /**
+     * A real success clears only the failed action it actually resolved. A success
+     * with different arguments must not erase still-valid evidence for this tool.
+     * Malformed/unknown arguments fail closed and clear nothing.
+     */
+    public static void onSucceeded(UUID companionId, String tool, String argsJson) {
+        if (companionId == null || tool == null) return;
+        String argsHash = ToolCallFingerprint.hashArguments(argsJson);
+        if (argsHash == null) return;
+        String prefix = companionId + "|" + tool + "|" + argsHash + "|";
+        HITS.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    /**
+     * Observe a real tool-result envelope. Only an explicit synchronous success
+     * clears evidence; an accepted async RUNNING reply is not success. Explicit
+     * failures return the same model-visible advice as admission rejections.
+     * Cancellation and unknown/non-object envelopes neither clear nor count.
+     */
+    public static String onResult(UUID companionId, String tool, String argsJson, String resultJson) {
+        if (companionId == null || tool == null || resultJson == null) return null;
+        try {
+            JsonElement parsed = JsonParser.parseString(resultJson);
+            if (!parsed.isJsonObject()) return null;
+            JsonObject result = parsed.getAsJsonObject();
+            JsonElement async = result.has("data") && result.get("data").isJsonObject()
+                    ? result.getAsJsonObject("data").get("async") : null;
+            if (async != null && (!async.isJsonPrimitive() || !async.getAsJsonPrimitive().isBoolean()
+                    || async.getAsBoolean())) return null;
+            JsonElement success = result.get("success");
+            if (success == null || !success.isJsonPrimitive() || !success.getAsJsonPrimitive().isBoolean())
+                return null;
+            JsonElement interrupted = result.get("interrupted");
+            if (interrupted != null && (!interrupted.isJsonPrimitive()
+                    || !interrupted.getAsJsonPrimitive().isBoolean())) return null;
+            if (interrupted != null && interrupted.getAsBoolean()) return null;
+            if (success.getAsBoolean()) {
+                onSucceeded(companionId, tool, argsJson);
+                return null;
+            }
+            JsonElement message = result.get("message");
+            String reason = message != null && message.isJsonPrimitive() ? message.getAsString() : "tool failed";
+            return onRejected(companionId, tool, reason, argsJson);
+        } catch (RuntimeException ignored) {
+            return null; // observation must never change dispatch
+        }
     }
 
     /** 当前记账条目数（自检/单测用）。 */
@@ -128,14 +180,14 @@ public final class ToolCallLoopWatch {
     }
 
     private static void publishLoop(UUID companionId, String tool, String fp, String reason,
-                                    String argsJson, int count) {
+                                    String argsHash, int count) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("companion_id", companionId.toString());
         data.put("tool", tool);
         data.put("repeat_count", count);
         data.put("fingerprint", fp);
         data.put("reason", clip(reason, MAX_SAMPLE_CHARS));
-        data.put("args", clip(argsJson, MAX_SAMPLE_CHARS));
+        data.put("argsHash", argsHash);
         try {
             MonitoringJournal.get().publish("tools", "tool_loop", data);
         } catch (RuntimeException ignored) {

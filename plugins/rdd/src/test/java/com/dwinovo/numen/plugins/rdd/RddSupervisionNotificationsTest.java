@@ -199,6 +199,38 @@ class RddSupervisionNotificationsTest {
         assertFalse(allowed(noRuntime)); call("clearNudgeThrottle",new Class<?>[]{UUID.class},noRuntime);
         assertTrue(allowed(noRuntime));
     }
+    @Test void repeatGuardRejectsMasterPauseAndOldChainIdentity() throws Exception {
+        UUID id=UUID.randomUUID(); TaskChain original=chain("a",true); bind(id,original);
+        String identity=(String)ownerCall("runningTaskIdentity",new Class<?>[]{TaskChain.class},original);
+        assertNotNull(identity);
+        original.pauseSubtask("a",TaskChain.OWNER_PAUSE_REASON);
+        assertFalse(guard(id,identity,"old reminder"),"master pause must reject an already sampled reminder");
+        assertTrue(trace().stream().noneMatch(s->s.startsWith("enqueueSystem:")));
+
+        TaskChain replacement=chain("replacement",true); bind(id,replacement);
+        assertFalse(guard(id,identity,"old chain reminder"),"old identity cannot speak into a replacement chain");
+        String current=(String)ownerCall("runningTaskIdentity",new Class<?>[]{TaskChain.class},replacement);
+        assertTrue(guard(id,current,"current reminder"));
+        assertTrue(trace().stream().anyMatch(s->s.startsWith("enqueueSystem:current reminder")));
+    }
+    @Test void repeatGuardRequiresActiveRunningTaskAndSuccessfulSystemHandoff() throws Exception {
+        UUID id=UUID.randomUUID(); TaskChain pending=chain("a",false); bind(id,pending);
+        assertNull(ownerCall("runningTaskIdentity",new Class<?>[]{TaskChain.class},pending));
+        assertFalse(guard(id,"invented","not running"));
+        assertTrue(trace().isEmpty());
+        assertTrue(pending.activateCurrentWithSnapshot(PlanningAssetSnapshot.from(Map.of(),new AssetRegistry())));
+        String identity=(String)ownerCall("runningTaskIdentity",new Class<?>[]{TaskChain.class},pending);
+        mode("enqueue_rejected"); assertFalse(guard(id,identity,"rejected")); assertTrue(allowed(id));
+        mode("normal"); assertTrue(guard(id,identity,"accepted"));
+    }
+    private static boolean guard(UUID id,String identity,String message) throws Exception {
+        return (boolean)ownerCall("nudgeIfRunning",new Class<?>[]{UUID.class,String.class,String.class},id,identity,message);
+    }
+    private static Object ownerCall(String name,Class<?>[] types,Object... args) throws Exception {
+        var m=loader.loadClass(PKG+"RddSupervisionNotifications").getDeclaredMethod(name,types);
+        m.setAccessible(true); return m.invoke(null,args);
+    }
+
     private static Object sideCall(String name, Class<?>[] types, Object... args) throws Exception {
         var m = loader.loadClass(PKG + "SideTaskHost").getDeclaredMethod(name, types);
         m.setAccessible(true);

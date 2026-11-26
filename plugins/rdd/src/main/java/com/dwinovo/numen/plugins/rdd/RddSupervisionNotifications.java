@@ -90,6 +90,32 @@ final class RddSupervisionNotifications {
     }
 
     /**
+     * Identity of the one task state eligible for supervisory reminders. Owner
+     * pause and every non-RUNNING state return null; no timer can revive them.
+     */
+    static String runningTaskIdentity(TaskChain chain) {
+        if (chain == null || chain.primaryStatus() != PrimaryGoalStatus.ACTIVE) return null;
+        Subtask current = chain.currentSubtask();
+        if (current == null || chain.currentSubtaskStatus() != SubtaskStatus.RUNNING
+                || chain.isOwnerPause(current.id())) return null;
+        PrimaryGoal primary = chain.currentPrimary();
+        if (primary == null) return null;
+        return chain.chainInstanceId() + "|" + primary.id() + "|" + current.id()
+                + "|" + chain.planRevision() + "|" + chain.ownerEpoch();
+    }
+
+    /**
+     * Repeat-watcher delivery guard. Recheck immediately before enqueue so an old
+     * candidate cannot speak into a replaced chain or a master-paused task.
+     */
+    static boolean nudgeIfRunning(UUID companionId, String expectedIdentity, String message) {
+        if (companionId == null || expectedIdentity == null || message == null || message.isBlank()) return false;
+        RddRuntime runtime = RddPlugin.runtime(companionId);
+        if (runtime == null || !expectedIdentity.equals(runningTaskIdentity(runtime.chain()))) return false;
+        return nudge(companionId, message);
+    }
+
+    /**
      * 总闸现在放不放行 —— <b>只读，不消费</b>。
      *
      * <p><b>为什么调用方需要它</b>（2026-10-06 核实）：{@code RddStallWatcher} 原来

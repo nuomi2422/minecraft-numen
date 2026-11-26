@@ -35,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.UUID;
@@ -97,6 +98,10 @@ public final class RddPlugin implements NumenPlugin {
     private static final Map<UUID, Map<String, Integer>> LAST_INVENTORY = new ConcurrentHashMap<>();
     /** 最近一次真实背包扫描时刻（系统毫秒），供规划声明的 verified_at 元字段。 */
     private static final Map<UUID, Long> LAST_INVENTORY_AT = new ConcurrentHashMap<>();
+    /** 最近一次死亡时刻（系统毫秒）：死亡窗口内，死亡前扫描不得继续贡献 available。 */
+    private static final Map<UUID, Long> LAST_DEATH_AT = new ConcurrentHashMap<>();
+    private static final long INVENTORY_SCAN_MAX_AGE_MILLIS = 5_000L;
+    private static final long INVENTORY_DEATH_WINDOW_MILLIS = 5L * 60L * 1_000L;
     /** setup 时保存的插件门面，用于监督拍醒（nudge 注入内置 AI）。 */
     private static volatile NumenApi numenApi;
     /** 任务链持久化目录 config/numen/rdd-tasks（每个同伴一个 <uuid>.json）。 */
@@ -188,7 +193,8 @@ public final class RddPlugin implements NumenPlugin {
         RddAlarms.install(numen.configDir());
         // H3（108 号）：重复查询的**运行时**感知（A3 的 redundant_query 是归档后处理，跑的时候不告警）。
         RddRepeatQueryWatcher.install(numen.configDir());
-        com.dwinovo.numen.agent.tool.ToolCallObserver.install((companionId, toolCallId, toolName, argsChars) -> {
+        com.dwinovo.numen.agent.tool.ToolCallObserver.installRawArguments(
+                (companionId, toolCallId, toolName, argsJson) -> {
             // 2026-11-02：MCP 监控面（toolCallId=mcp-*）的轮询不是同伴行为。
             // 之前把它算进「重复查询」，会因外部采集给 AI 发假的「你刚问过」提醒。
             if (RddRepeatQueryWatcher.isExternalCall(toolCallId)) {
@@ -205,7 +211,7 @@ public final class RddPlugin implements NumenPlugin {
                 return;
             }
             long tick = body.level().getGameTime();
-            RddRepeatQueryWatcher.observe(companionId, toolName, argsChars, tick);
+            RddRepeatQueryWatcher.observe(companionId, toolCallId, toolName, argsJson, tick);
         });
         // E1 shadow：规划角色的预算策略（与客户端同一份文件，幂等）。
         com.dwinovo.numen.agent.llm.BudgetPolicy.install(numen.configDir());
@@ -335,6 +341,7 @@ public final class RddPlugin implements NumenPlugin {
             SleepWakeWatcher.clearBody(body);
             LAST_INVENTORY.remove(body.getUUID());
             LAST_INVENTORY_AT.remove(body.getUUID());
+            LAST_DEATH_AT.remove(body.getUUID());
             // 38号v3.6 B24：携带器缓存与 LAST_INVENTORY 同生命周期，不清就是泄漏
             RddCarryHint.invalidate(body.getUUID());
             RddFutureNeeds.clear(body.getUUID());
@@ -554,6 +561,7 @@ public final class RddPlugin implements NumenPlugin {
             FACTS.clear();
             LAST_CONTEXT.clear();
             LAST_INVENTORY.clear();
+            LAST_DEATH_AT.clear();
             RddCarryHint.invalidateAll();
             LAST_EXPANSION_REPORT.clear();
             RddSupervisionNotifications.clearKickoffAll();
@@ -1747,6 +1755,14 @@ private static String withAssets(UUID companionId, String rddContext) {
                 soldierHint, skipRecoverySideTask);
     }
 
+    private static boolean requestReplan(UUID companionId, String reason, boolean fromNegotiation,
+                                         String soldierHint, boolean skipRecoverySideTask,
+                                         Runnable acceptedSideEffect) {
+        return requestReplan(companionId, reason,
+                fromNegotiation ? RddReplanTransition.Trigger.NEGOTIATION : RddReplanTransition.Trigger.FAILURE,
+                soldierHint, skipRecoverySideTask, acceptedSideEffect);
+    }
+
     /**
      * 重规划主入口（触发源显式）：预算、状态转换、接受后清理都在 {@link RddReplanTransition} 一处完成，
      * 这里只做资料组装与观测（预算/转换/接受回调都在 {@link RddReplanTransition}）。
@@ -1861,7 +1877,9 @@ private static String withAssets(UUID companionId, String rddContext) {
             boolean survival = trigger == RddReplanTransition.Trigger.SURVIVAL;
             if (survival ? !RddReplanTransition.requirePlanningServer(companionId, survivalToken, chain, server)
                     : server == null) {
-                if (!survival) chain.resumeFromReplanning();
+                // A death loss committed at admission is a hard premise hold. Missing planner
+                // infrastructure must not turn it into permission to resume the old resource plan.
+                if (!survival && !chain.resourcePremiseReevaluationRequired()) chain.resumeFromReplanning();
                 if (concernReview != null) RddNegotiationInbox.deferReview(companionId, concernReview, null,
                         "planning server unavailable", "current owner re-establishes server identity and supplies new evidence");
                 return true;
@@ -2010,7 +2028,8 @@ private static String withAssets(UUID companionId, String rddContext) {
     }
 
     /** Keep expanded work until initial or restored admission; never resume it from settlement. */
-    private static boolean deferDeathReplan(UUID companionId, int seq, String reason) {
+    private static boolean deferDeathReplan(UUID companionId, int seq, String reason,
+                                            RddDeferredDeathReplan.ResourceLoss resourceLoss) {
         var rt = runtime(companionId);
         var death = RddDeathLedger.latest(companionId);
         if (rt == null || death == null || death.seq() != seq) return false;
@@ -2019,7 +2038,7 @@ private static String withAssets(UUID companionId, String rddContext) {
                 || (chain.primaryStatus() != PrimaryGoalStatus.PENDING
                     && chain.primaryStatus() != PrimaryGoalStatus.WAITING
                     && chain.primaryStatus() != PrimaryGoalStatus.RECOVERING)) return false;
-        RddDeferredDeathReplan.defer(companionId, chain, seq, reason);
+        RddDeferredDeathReplan.defer(companionId, chain, seq, reason, resourceLoss);
         return true;
     }
 
@@ -2035,7 +2054,8 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (claimed == null) return false;
         boolean accepted = false;
         try {
-            accepted = requestReplan(companionId, pending.reason(), true, null, true);
+            accepted = requestReplan(companionId, pending.reason(), true, null, true, () ->
+                    commitDeathResourcePremises(companionId, owner, pending.deathSeq(), pending.resourceLoss()));
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] deferred death replan failed {}: {}", companionId, ex.toString());
         }
@@ -2060,30 +2080,36 @@ private static String withAssets(UUID companionId, String rddContext) {
             if (seq < 0) return false;
             String preparePayload = String.valueOf(data.getOrDefault("prepareResume", ""));
             boolean preparationHandled = !preparePayload.isBlank();
-            boolean preparationIdentityValid = true;
-            if (preparationHandled) {
-                var task = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
-                var rt = runtime(companionId);
-                if (!DeathPreparationHost.settlementIdentity(companionId, seq, task, rt)) {
-                    RddMonitor.publish("death_prepare_settlement_rejected", Map.of(
-                            "companionId", companionId.toString(), "deathSeq", seq, "reason", "stale_recovery_identity"));
-                    preparationIdentityValid = false; // still settle this batch's physical pickup facts below
-                }
-            }
             var prepareTask = com.dwinovo.numen.rdd.side.death.DeathPreparation.resumeTask(preparePayload);
+            var settlementRuntime = runtime(companionId);
+            boolean preparationIdentityValid = !preparationHandled
+                    || DeathPreparationHost.settlementIdentity(companionId, seq, prepareTask, settlementRuntime);
+            boolean recoveryOwnsCurrentMainline = !preparationHandled
+                    || (prepareTask != null && settlementRuntime != null
+                        && com.dwinovo.numen.rdd.side.death.DeathPreparation.sameChain(prepareTask, settlementRuntime.chain()));
+            if (!preparationIdentityValid) {
+                RddMonitor.publish("death_prepare_settlement_rejected", Map.of(
+                        "companionId", companionId.toString(), "deathSeq", seq, "reason", "stale_recovery_identity"));
+            }
             String key = DeathPreparationHost.settlementKey(companionId, seq, preparationHandled, prepareTask);
             if (!DEATH_SETTLEMENTS.add(key)) return false;
             claimedKey = key;
-            // Hold the actual current step before any fallible settlement work, not merely its resume event.
-            if (preparationHandled && preparationIdentityValid
-                    && !com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(runtime(companionId).chain(),
-                            preparePayload, false, "preparation_settlement_in_progress")) return false;
+            // Hold the actual matching current step before any fallible settlement work. A stale body
+            // identity may still pause its own mainline, but must never mutate a replacement chain.
+            if (preparationHandled && recoveryOwnsCurrentMainline
+                    && settlementRuntime.chain().primaryStatus() != PrimaryGoalStatus.REPLANNING
+                    && !com.dwinovo.numen.rdd.side.death.DeathPreparation.settle(settlementRuntime.chain(),
+                            preparePayload, false, preparationIdentityValid
+                                    ? "preparation_settlement_in_progress" : "stale_recovery_identity")) return false;
             // 2026-10-31：产出侧写的是 terminal_reason（下划线），这里原先只读驼峰键
             // deathRecoveryTerminalReason —— 两者对不上，terminal 永远为空，
             // 于是 ledgerState 恒 UNVERIFIED、replanRequested 恒 true（实测 죽30/31 两次都是空）。
             String terminal = com.dwinovo.numen.rdd.side.death.RecoveryTerminal.parse(data);
             boolean confirmedLost = com.dwinovo.numen.rdd.side.death.RecoveryTerminal.isConfirmedAbsent(terminal);
             boolean recovered = com.dwinovo.numen.rdd.side.death.RecoveryTerminal.isRecovered(terminal);
+            var settlementDeath = RddDeathLedger.all(companionId).stream()
+                    .filter(candidate -> candidate.seq() == seq).findFirst().orElse(null);
+            RddDeferredDeathReplan.ResourceLoss deathResourceLoss = null;
             if (confirmedLost) {
                 RddDeathLedger.confirmLost(companionId, seq,
                         "loaded death chunk scan found no tracked drop entity");
@@ -2092,8 +2118,20 @@ private static String withAssets(UUID companionId, String rddContext) {
                 RddDeathLedger.confirmRecovered(companionId, seq,
                         "all tracked drops observed back in inventory");
                 saveLedger(companionId);
+                if (settlementRuntime != null) {
+                    settlementRuntime.chain().resolveResourcePremiseInvalidation(
+                            settlementRuntime.chain().currentPrimary().id(), "death batch recovered seq=" + seq);
+                }
+            }
+            if (!recovered) {
+                Map<String, Integer> lost = settlementDeath == null ? Map.of() : settlementDeath.lostItems();
+                // Death facts may settle UNKNOWN, but that is not permission to keep the old resource
+                // premises. The ledger's empty item table means UNKNOWN scope, not known-empty loss.
+                deathResourceLoss = new RddDeferredDeathReplan.ResourceLoss(lost, !lost.isEmpty(),
+                        confirmedLost ? "confirmed_lost" : "unverified_settlement");
             }
             // UNKNOWN（执行者放弃/保护线结束）仍然要进入规划上下文，但不伪造 CONFIRMED_LOST。
+            RddDeferredDeathReplan.ResourceLoss settledResourceLoss = deathResourceLoss;
             Long inventoryAt = lastInventoryAtMillis(companionId);
             Map<String, Integer> counts = inventoryAt == null ? null : lastInventory(companionId);
             RddRepairDispatch.recomputeAfterDeath(companionId, counts, confirmedLost,
@@ -2102,25 +2140,44 @@ private static String withAssets(UUID companionId, String rddContext) {
             String prepareReason = String.valueOf(data.getOrDefault("prepareReason", "not verified"));
             if (preparationHandled && preparationIdentityValid) {
                 // Recheck at the commit boundary; an old COMPLETE event is not current wearing evidence.
-                var evidence = SideTaskHost.deathPreparationResult(companionId, preparePayload);
-                var rt = runtime(companionId);
-                var preparation = DeathPreparationHost.settlePreparation(rt.chain(), preparePayload, prepareReason, evidence);
-                if (!preparation.accepted()) return false;
-                prepareVerified = preparation.verified();
-                prepareReason = preparation.reason();
-                if (!prepareVerified) {
-                    var body = RddCompanionBody.get(companionId);
-                    if (body != null) com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "recovery_not_verified");
+                // REPLANNING is already a hard hold after death, so it must be re-planned rather than
+                // forced through the ordinary ACTIVE/PENDING preparation pause transition.
+                if (settlementRuntime.chain().primaryStatus() == PrimaryGoalStatus.REPLANNING) {
+                    prepareReason = prepareReason + "; death_replanning_holds_old_body";
+                } else {
+                    var evidence = SideTaskHost.deathPreparationResult(companionId, preparePayload);
+                    var preparation = DeathPreparationHost.settlePreparation(settlementRuntime.chain(),
+                            preparePayload, prepareReason, evidence);
+                    if (!preparation.accepted()) return false;
+                    prepareVerified = preparation.verified();
+                    prepareReason = preparation.reason();
+                    if (!prepareVerified) {
+                        var body = RddCompanionBody.get(companionId);
+                        if (body != null) com.dwinovo.numen.task.CompanionTickDispatcher.stopActive(body, "recovery_not_verified");
+                    }
+                    saveRuntimes();
+                    publishTaskSnapshot(companionId, prepareVerified ? "death_prepare_verified" : "death_prepare_unverified_paused");
                 }
-                saveRuntimes();
-                publishTaskSnapshot(companionId, prepareVerified ? "death_prepare_verified" : "death_prepare_unverified_paused");
             }
-            boolean shouldReplan = !recovered && !preparationHandled;
+            boolean preparationCleared = preparationHandled && preparationIdentityValid && prepareVerified;
+            boolean recoveryNeedsReplan = preparationHandled ? !preparationCleared : !recovered;
+            boolean resourceReeval = settlementRuntime != null
+                    && settlementRuntime.chain().resourcePremiseReevaluationRequired();
+            boolean lossAffectsCurrent = settlementRuntime != null && settledResourceLoss != null
+                    && settlementRuntime.chain().wouldInvalidateResourcePremises(
+                            settledResourceLoss.lostItems().keySet(), !settledResourceLoss.known());
+            // Only resource-affected death/LOSS forces local replanning. Unrelated deaths keep the real
+            // mainline; unverified preparation still cannot silently unfreeze even when pickup recovered.
+            boolean shouldReplan = recoveryOwnsCurrentMainline && recoveryNeedsReplan
+                    && (resourceReeval || lossAffectsCurrent || preparationHandled);
             String replanReason = "death recovery settled seq=" + seq + " terminal=" + terminal;
-            boolean replanDeferred = shouldReplan && deferDeathReplan(companionId, seq, replanReason);
-            // ACTIVE keeps the existing immediate negotiation route; deferred work has spent no budget.
+            boolean replanDeferred = shouldReplan
+                    && deferDeathReplan(companionId, seq, replanReason, settledResourceLoss);
+            // DEATH may reuse an already-held REPLANNING state, but never resumes the pre-death plan.
+            // Resource loss is committed only inside this accepted callback, never on refusal.
             boolean replanAccepted = shouldReplan && !replanDeferred
-                    && requestReplan(companionId, replanReason, true, null, true);
+                    && requestReplan(companionId, replanReason, RddReplanTransition.Trigger.DEATH, null, true, () ->
+                            commitDeathResourcePremises(companionId, settlementRuntime.chain(), seq, settledResourceLoss));
             Map<String, Object> settlement = new LinkedHashMap<>();
             settlement.put("companionId", companionId.toString());
             settlement.put("deathSeq", seq);
@@ -2138,6 +2195,9 @@ private static String withAssets(UUID companionId, String rddContext) {
             settlement.put("replanRequested", replanAccepted);
             settlement.put("replanDeferred", replanDeferred);
             settlement.put("inventoryKnown", counts != null);
+            settlement.put("resourcePremiseReevaluation", settlementRuntime != null
+                    && settlementRuntime.chain().resourcePremiseReevaluationRequired());
+            settlement.put("resourcePremiseReevaluationPending", replanDeferred && lossAffectsCurrent);
             if (preparationHandled) {
                 settlement.put("prepareVerified", prepareVerified);
                 settlement.put("prepareReason", prepareReason);
@@ -2173,6 +2233,7 @@ private static String withAssets(UUID companionId, String rddContext) {
         if (body == null) return;
         UUID companionId = body.getUUID();
         if (companionId == null) return;
+        LAST_DEATH_AT.put(companionId, System.currentTimeMillis());
         RddDeferredDeathReplan.discard(companionId);
         // 死亡失效不靠持久 chainId 猜身体代次；先撤本次在飞生存计划，再走原死亡恢复。
         RddRuntime survivalRuntime = RUNTIMES.get(companionId);
@@ -2182,15 +2243,19 @@ private static String withAssets(UUID companionId, String rddContext) {
         ensureLedgerLoaded(companionId);
         try {
             int lost = assets(companionId).invalidateByType("inventory_scan");
-            // 修正（2026-09-25）：不再 LAST_INVENTORY.remove()。清空缓存会让"死亡后、重扫回 OBSERVED 之前"
-            // 触发的重规划读到空背包 → 把已有全套铁装的人重新规划回铁器时代。缓存由 Detector 下一 tick
-            // 用复活后的真实背包覆盖（那才是真相）；INVALID 只作为提示（见 PlanningAssetSnapshot）。
+            // 缓存不在这里清空：精确死亡快照才是批次真相。规划快照会拒绝 INVALID/过期/死亡前旧扫描，
+            // 只有复活后的活体新扫描且注册表重新 OBSERVED 才恢复 available。
             saveAssets(companionId);              // 失效态落盘，跨重启也保持
             BODY.remove(companionId);
             // F6：本次死亡**真正掉了哪些、各多少**。必须读死亡瞬间的真实背包（body 还在），
             // 不能读 LAST_INVENTORY —— 上一轮实机"LOST 没新增"就是读了缓存的锅。
             // 这份 lostItems 是回收判据的批次身份：没有它就只能"任意一件回来即算成功"（假完成）。
-            Map<String, Integer> lostItems = deathInstantCounts(body);
+            DeathInstantCounts deathCounts = deathInstantCounts(body);
+            Map<String, Integer> lostItems = deathCounts.counts();
+            // Death facts are durable now; resource-premise mutation is not. The settlement/admission
+            // consumer carries this exact known/UNKNOWN scope in RddDeferredDeathReplan.
+            boolean resourceLossPending = RUNTIMES.get(companionId) != null
+                    && RUNTIMES.get(companionId).chain().wouldInvalidateResourcePremises(lostItems.keySet(), !deathCounts.known());
             // 2026-11-02：死因要随台账落盘，才能在**规划侧**作为 knownFailures 召回死亡经验
             // （此前只写进死亡事件，台账与规划都拿不到）。读不到就空串，不编。
             // P0-2：ledger 只存短标签时，复盘拿不到 damageType/attacker；把 attacker 一并编进
@@ -2216,6 +2281,14 @@ private static String withAssets(UUID companionId, String rddContext) {
             invalidatedData.put("companionId", companionId.toString());
             invalidatedData.put("reason", "companion_death");
             invalidatedData.put("invalidatedInventoryEntries", lost);
+            invalidatedData.put("deathInventoryKnown", deathCounts.known());
+            invalidatedData.put("deathInventorySource", deathCounts.source());
+            invalidatedData.put("deathInventory", deathCounts.counts());
+            invalidatedData.put("resourcePremiseReevaluation", survivalRuntime != null
+                    && survivalRuntime.chain().resourcePremiseReevaluationRequired());
+            invalidatedData.put("resourcePremiseReevaluationPending", resourceLossPending);
+            invalidatedData.put("invalidatedResourcePrimaries", List.of());
+            invalidatedData.put("invalidatedResourceSubtasks", List.of());
             if (death != null) {
                 invalidatedData.put("deathSeq", death.seq());
                 invalidatedData.put("deathAt", death.deathAt());
@@ -2274,6 +2347,9 @@ Map<String, Object> deathData = new LinkedHashMap<>();
             // （88 §7.5 的坑：8 次死亡机读对不上）。与 companion_assets_invalidated 里的
             // deathSeq 同源（同一次 record() 的返回），不重复记账；记录失败时 -1 = UNKNOWN。
             deathData.put("deathSeq", death == null ? -1 : death.seq());
+            deathData.put("deathInventoryKnown", deathCounts.known());
+            deathData.put("deathInventorySource", deathCounts.source());
+            deathData.put("deathInventory", deathCounts.counts());
             // ── 死因结构化（2026-10-01 本轮新增）────────────────────────────
             // 老字段 reason 只有 starvation/other 二值，把「掉岩浆里/淹死/摔死/被怪打死/
             // 被玩家打死」全塌缩成 other —— 而"被玩家打死"和"被怪打死"归因方向相反
@@ -2398,7 +2474,8 @@ Map<String, Object> deathData = new LinkedHashMap<>();
                 boolean repeat = publishRepeatDeathHint(body, companionId, death == null ? -1 : death.seq());
                 RddRepairDispatch.onDeath(companionId, goalId, deathAt, dropTimeline, repeat, death);
                 // 真正的内部恢复任务：旧 repair 事件保留作兼容观测，驾驶权交给统一 SideTask。
-                if (death != null && !death.lostItems().isEmpty()) {
+                // 死亡事件本身必须开门；瞬时逐项表为空只表示 UNKNOWN，不能当作无损失。
+                if (death != null) {
                     RddRepairDispatch.markDeathRecoveryHandoff(companionId, death.seq());
                     SideTaskHost.expectDeathRecovery(companionId, death.seq(),
                             body.level().dimension().location().toString(), deathAt, death.lostItems());
@@ -2409,11 +2486,9 @@ Map<String, Object> deathData = new LinkedHashMap<>();
                     MinecraftServer deathServer = body.serverLevel().getServer();
                     if (deathServer != null) {
                         SideTaskHost.tick(deathServer, body);
-                        LOG.info("[rdd] 死亡当拍已开死亡恢复支线 seq={} {}", death.seq(), companionId);
+                        LOG.info("[rdd] 死亡当拍已开死亡恢复支线 seq={} {}（逐项表={}）",
+                                death.seq(), companionId, death.lostItems().isEmpty() ? "UNKNOWN" : "TRACKED");
                     }
-                } else if (death != null) {
-                    // 空背包死亡 = 没有可回收的东西：不开恢复支线，也不该写成 CONFIRMED_LOST。
-                    LOG.info("[rdd] 死亡 seq={} 没有记录到掉落，不开恢复支线 {}", death.seq(), companionId);
                 }
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 支线任务生成失败 {}: {}", companionId, ex.toString());
@@ -2483,39 +2558,83 @@ private static String safeDeathAttacker(NumenPlayer body) {
         }
     }
 
+    /** 死亡背包观测：counts 可空语义由 known/source 同时表达，空表不再冒充“已知无损失”。 */
+    private record DeathInstantCounts(Map<String, Integer> counts, boolean known, String source) {
+    }
+
     /**
      * 死亡瞬间的真实背包计数（F6 批次身份的数据源）。
      *
-     * <p><b>2026-09-30 实机修正：光读 body 拿不到</b>。第一次实现只读
-     * {@code RddDetector.countInventory(body)}，实机事件里 {@code trackedItemKinds=0}
-     * —— 死亡事件触发时身体的物品栏已经被原版处理掉了，逐项核对因此完全失效
-     * （判据退化成"不可核对"，F6 等于没修）。
-     *
-     * <p>所以改成**先读 body，读空则回落到最后一次真实扫描的缓存**
-     * （{@code LAST_INVENTORY} 由 Detector 每次 tick 写入，死亡那一刻仍然有效）。
-     * 上一轮笔记担心的"REMOVE 会清空缓存"针对的是稍后的 {@code CompanionEvent.REMOVE}，
-     * 而这里跑在更早的 {@code DEATH} 上，实测缓存仍在。
-     *
-     * <p>两者都空才返回空表 —— 那一批不可逐项核对，判据只会更保守，不会更松。
+     * <p>第一真相是 A1 在原版清包前捕获的<b>精确 body 不可变快照</b>。present-empty = 已知空；
+     * Optional.empty = UNKNOWN，绝不能与已知空混为一谈。只有快照缺失时才回落到清包后的 live /
+     * LAST_INVENTORY，且这些回落只作为线索，source 明示、known=false。
      */
-    private static Map<String, Integer> deathInstantCounts(NumenPlayer body) {
+    private static DeathInstantCounts deathInstantCounts(NumenPlayer body) {
+        try {
+            var snapshot = body.deathInventorySnapshot();
+            if (snapshot.isEmpty()) {
+                snapshot = com.dwinovo.numen.entity.Companions.deathInventorySnapshot(body.getUUID(), body.getId());
+            }
+            if (snapshot.isPresent()) {
+                var fact = snapshot.get();
+                boolean empty = fact.isEmpty();
+                LOG.info("[rdd] 死亡瞬间背包使用精确快照：{}（body={}, generation={}）",
+                        empty ? "KNOWN_EMPTY" : "TRACKED", body.getId(), fact.deathGeneration());
+                return new DeathInstantCounts(fact.inventory(), true, empty ? "death_snapshot_empty" : "death_snapshot");
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("[rdd] 读取精确死亡背包快照失败，按 UNKNOWN 回落: {}", ex.toString());
+        }
         try {
             Map<String, Integer> live = RddDetector.countInventory(body);
-            if (live != null && !live.isEmpty()) return Map.copyOf(live);
+            if (live != null && !live.isEmpty()) {
+                LOG.warn("[rdd] 死亡快照 UNKNOWN，live 非空仅作线索：{} 项", live.size());
+                return new DeathInstantCounts(Map.copyOf(live), false, "live_fallback");
+            }
         } catch (RuntimeException ex) {
-            LOG.warn("[rdd] 读死亡瞬间背包失败，回落到缓存: {}", ex.toString());
+            LOG.warn("[rdd] 读死亡瞬间 live 背包失败，回落到缓存: {}", ex.toString());
         }
         try {
             Map<String, Integer> cached = lastInventory(body.getUUID());
             if (!cached.isEmpty()) {
-                LOG.info("[rdd] 死亡瞬间背包用缓存兜底：{} 项（cachedAt={}）",
+                LOG.warn("[rdd] 死亡快照 UNKNOWN，缓存仅作线索：{} 项（cachedAt={}）",
                         cached.size(), lastInventoryAtMillis(body.getUUID()));
-                return cached;
+                return new DeathInstantCounts(Map.copyOf(cached), false, "last_inventory_fallback");
             }
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 读死亡背包缓存失败 {}: {}", ex.toString());
         }
-        return Map.of();
+        return new DeathInstantCounts(Map.of(), false, "unknown");
+    }
+
+    /** Commit only for the captured current owner and death batch; stale callbacks are no-ops. */
+    private static TaskChain.ResourcePremiseInvalidation commitDeathResourcePremises(
+            UUID companionId, TaskChain owner, int deathSeq, RddDeferredDeathReplan.ResourceLoss loss) {
+        if (loss == null) {
+            return new TaskChain.ResourcePremiseInvalidation(List.of(), List.of(), List.of(), false, "no resource loss");
+        }
+        var runtime = RUNTIMES.get(companionId);
+        var death = RddDeathLedger.latest(companionId);
+        if (runtime == null || runtime.chain() != owner || death == null || death.seq() != deathSeq
+                || owner.currentPrimary() == null) {
+            return new TaskChain.ResourcePremiseInvalidation(List.of(), List.of(), List.of(), !loss.known(),
+                    "stale death resource loss owner");
+        }
+        var result = invalidateDeathResourcePremises(owner, loss, deathSeq);
+        if (result.reevaluationRequired()) {
+            saveRuntimes();
+            publishTaskSnapshot(companionId, "death_resource_premises_invalidated");
+        }
+        return result;
+    }
+
+    /** Known loss keys and UNKNOWN scope have different commit semantics; neither rewrites history. */
+    private static TaskChain.ResourcePremiseInvalidation invalidateDeathResourcePremises(
+            TaskChain owner, RddDeferredDeathReplan.ResourceLoss loss, int deathSeq) {
+        String reason = "death inventory " + (loss.known() ? "known" : "UNKNOWN")
+                + " source=" + loss.source() + " seq=" + deathSeq;
+        return loss.known() ? owner.invalidateResourcePremises(loss.lostItems().keySet(), reason)
+                : owner.invalidateAllResourcePremises(reason);
     }
 
     /**
@@ -2886,8 +3005,14 @@ private static String safeDeathAttacker(NumenPlayer body) {
      */
     public static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot planningSnapshot(UUID companionId) {
         refreshInventoryFromLive(companionId);
+        return timedPlanningSnapshot(companionId);
+    }
+
+    private static com.dwinovo.numen.rdd.core.PlanningAssetSnapshot timedPlanningSnapshot(UUID companionId) {
         return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(
-                lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId));
+                lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId),
+                System.currentTimeMillis(), INVENTORY_SCAN_MAX_AGE_MILLIS,
+                LAST_DEATH_AT.get(companionId), INVENTORY_DEATH_WINDOW_MILLIS);
     }
 
     /** 【A】规划/判定前同步刷新实时背包（拿得到 server 就刷；失败静默回落缓存）。 */
@@ -2897,7 +3022,7 @@ private static String safeDeathAttacker(NumenPlayer body) {
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
             if (server == null) return;
             NumenPlayer ap = NumenPlayer.findByUuid(server, companionId);
-            if (ap != null) {
+            if (ap != null && !ap.isDeadOrDying()) {
                 cacheInventory(companionId, RddDetector.countInventory(ap));
             }
         } catch (RuntimeException ex) {
@@ -2922,15 +3047,14 @@ private static String safeDeathAttacker(NumenPlayer body) {
         if (companionId != null && server != null) {
             try {
                 NumenPlayer ap = NumenPlayer.findByUuid(server, companionId);
-                if (ap != null) {
+                if (ap != null && !ap.isDeadOrDying()) {
                     cacheInventory(companionId, RddDetector.countInventory(ap));
                 }
             } catch (RuntimeException ex) {
                 LOG.warn("[rdd] 规划前实时刷新背包失败 {}: {}", companionId, ex.toString());
             }
         }
-        return com.dwinovo.numen.rdd.core.PlanningAssetSnapshot.from(
-                lastInventory(companionId), lastInventoryAtMillis(companionId), assets(companionId));
+        return timedPlanningSnapshot(companionId);
     }
 
     /** 清某同伴的重规划预算计数（重绑/清任务时调用）。 */
@@ -2986,10 +3110,14 @@ private static String safeDeathAttacker(NumenPlayer body) {
 
     /** 记录某同伴最近一次背包计数（Detector 心跳写）。null/空安全。 */
     public static void cacheInventory(UUID companionId, Map<String, Integer> counts) {
-        if (companionId != null) {
-            LAST_INVENTORY.put(companionId, counts == null ? Map.of() : Map.copyOf(counts));
-            LAST_INVENTORY_AT.put(companionId, System.currentTimeMillis());
+        if (companionId == null) return;
+        if (counts == null) {
+            LAST_INVENTORY.remove(companionId);
+            LAST_INVENTORY_AT.remove(companionId);
+            return;
         }
+        LAST_INVENTORY.put(companionId, Map.copyOf(counts));
+        LAST_INVENTORY_AT.put(companionId, System.currentTimeMillis());
     }
 
     /** 最近一次背包快照（可能为空 = 从未观测到该同伴背包）。不可变。 */

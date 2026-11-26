@@ -363,7 +363,7 @@ public final class NumenLlmClient {
             try {
                 if (observation != null) {
                     LlmActivity.markSettled(observation.companionId(), activityToken,
-                            acc.finishReason, turn.toolCalls().size());
+                            acc.finishReason, turn.toolCalls().size(), turn.content());
                 }
             } catch (RuntimeException ignored) {
                 // 观测层不许影响返回值

@@ -263,7 +263,8 @@ class RddMainlineWiringPinTest {
         String tick = methodBody(detector(), "tickRuntime", "tickNegotiation");
         // 必须连着 return 一起匹配，否则会误抓 EarlyAchievement 循环里那两个 break（:440/:449）。
         Matcher m = Pattern.compile(
-                "detectionMode\\(\\)\\s*!=\\s*(?:DetectionMode\\.)?HARD_CODED\\s*\\)\\s*\\{\\s*return;").matcher(tick);
+                "detectionMode\\(\\)\\s*!=\\s*(?:DetectionMode\\.)?HARD_CODED\\s*\\)\\s*\\{\\s*"
+                        + "(?:stallWatcher\\.observeProgress\\([^;]*\\);\\s*)?return;").matcher(tick);
         assertTrue(m.find(),
                 "★ AI_ASSISTED 二级必须继续「交还 AI、不做卡死监督」。找的是形如 "
                         + "`if (current.detectionMode() != HARD_CODED) { return; }` 的那段。删掉它的后果是："

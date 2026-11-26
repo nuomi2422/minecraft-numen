@@ -277,6 +277,11 @@ public class RddConcernAsyncCallbackConsumerTest {
         assertEquals("DEFERRED",host.review().get("premise_disposition"));
         assertEquals(OLD,host.review().get("reason_reported"));
         assertTrue(host.review().get("host_reason").toString().contains("invalidated"));
+        assertEquals(PrimaryGoalStatus.REPLANNING, chain.primaryStatus(),
+                "death must not silently reactivate the pre-death plan");
+        chain.nextPlanRevision();
+        chain.replaceCurrentSubtasks(List.of(Subtask.hardCoded("s", "recovery replacement",
+                Map.of("asset_key", "minecraft:iron_ingot", "minimum", 1))));
         activate();report("PAUSE",FRESH,"");
         host.runNext();assertEquals(FRESH,host.pendingReason());
         assertTrue(JsonParser.parseString(host.requestReview(ref,"after-death explicit current observation")).getAsJsonObject().get("success").getAsBoolean());

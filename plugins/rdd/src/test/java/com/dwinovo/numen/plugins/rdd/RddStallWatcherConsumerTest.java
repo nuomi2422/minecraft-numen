@@ -67,6 +67,32 @@ class RddStallWatcherConsumerTest {
     }
     @AfterAll static void closeLoader() throws Exception { if(loader!=null)loader.close(); }
 
+    @Test void assistedProgressClearsRepeatEvidenceWithoutNudgingOrFailing() throws Exception {
+        var f = new Fixture(true);
+        f.call("progress");
+        int clears = (int) f.call("repeatClears");
+        f.call("progress");
+        assertEquals(clears, f.call("repeatClears"), "unchanged assisted work is not progress");
+        f.set("inventory", 5);
+        f.call("progress");
+        assertEquals(clears + 1, f.call("repeatClears"));
+        assertEquals(0, f.count());
+        assertEquals(0, f.call("sent"));
+        assertEquals(0, f.events("llm_idle_stall"));
+        assertEquals(SubtaskStatus.RUNNING, f.chain.currentSubtaskStatus());
+    }
+
+    @Test void detectorAssistedBranchConsumesProgressWithoutHardCodedSupervision() throws Exception {
+        Path root = root();
+        String detector = Files.readString(root.resolve(
+                "plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/RddDetector.java"));
+        int assisted = detector.indexOf("current.detectionMode() != DetectionMode.HARD_CODED");
+        assertTrue(assisted >= 0);
+        assertTrue(detector.indexOf("stallWatcher.observeProgress(ap, rt, current)", assisted) >= 0);
+        assertTrue(detector.indexOf("stallWatcher.observeProgress(ap, rt, current)", assisted)
+                < detector.indexOf("return;", assisted));
+    }
+
     @Test void stationaryInventoryReachesIdleAndStalledConsumers() throws Exception {
         var f=new Fixture(true); f.ticks(11,false);
         assertEquals(10,f.count()); assertEquals(1,f.events("llm_idle_stall"));
@@ -81,9 +107,16 @@ class RddStallWatcherConsumerTest {
     }
     @Test void realItemChangeRestartsInventoryWindow() throws Exception {
         var f=new Fixture(true); f.ticks(9,false); assertEquals(8,f.count());
+        int clears=(int)f.call("repeatClears");
         f.set("inventory",5); f.tick(); assertEquals(0,f.count());
+        assertEquals(clears+1,f.call("repeatClears"),"observed item progress retires old repeat evidence");
         f.ticks(9,true); assertEquals(0,f.events("llm_idle_stall"));
         f.tick(); assertEquals(1,f.events("llm_idle_stall"));
+    }
+    @Test void inventoryWalkingIsNotRepeatProgressButDoesNotResetStallWindow() throws Exception {
+        var f=new Fixture(true); f.ticks(1,false); int clears=(int)f.call("repeatClears");
+        f.ticks(12,true); assertEquals(clears,f.call("repeatClears"));
+        assertEquals(1,f.events("llm_idle_stall"));
     }
     @Test void stalledInventoryResumesOnlyOnItemsAndReusesSameWindow() throws Exception {
         var f=new Fixture(true); f.ticks(16,false);
@@ -241,6 +274,14 @@ class RddStallWatcherConsumerTest {
     }
 
     private static final Map<String,String> SEAMS=Map.ofEntries(
+        Map.entry("RddRepeatQueryWatcher","""
+            package com.dwinovo.numen.plugins.rdd;
+            final class RddRepeatQueryWatcher {
+                static int clears;
+                static void clear(java.util.UUID id){if(id!=null)clears++;}
+                static void clearAll(){clears=0;}
+            }
+            """),
         Map.entry("StallHarness","""
             package com.dwinovo.numen.plugins.rdd;
             import java.util.*;
@@ -257,13 +298,14 @@ class RddStallWatcherConsumerTest {
                 final RddStallWatcher owner=new RddStallWatcher(new RddFurnaceWatch());
                 final net.minecraft.world.inventory.AbstractFurnaceMenu furnace=new net.minecraft.world.inventory.AbstractFurnaceMenu(ap.level());
                 public StallHarness(RddRuntime rt) {
-                    this.rt=rt; emitted.clear(); sent=0;
+                    this.rt=rt; emitted.clear(); sent=0; RddRepeatQueryWatcher.clears=0;
                     RddPlugin.enabled=true; RddPlugin.allowed=true;
                     TimerRegistry.pending=false; CompanionTickDispatcher.active=false;
                     CompanionTickDispatcher.progress=0; CompanionTickDispatcher.tool="mine"; CompanionTickDispatcher.taskId="t1";
                     LlmActivity.flying=false; LlmActivity.stale=false; LlmActivity.known=true; LlmActivity.streak=0;
                 }
                 public void track(){owner.track(ap,rt,rt.chain().currentSubtask());}
+                public void progress(){owner.observeProgress(ap,rt,rt.chain().currentSubtask());}
                 public void handle(){owner.handleStalled(ap,rt,rt.chain().currentSubtask());}
                 public int count() throws Exception {
                     var f=RddStallWatcher.class.getDeclaredField("stalls"); f.setAccessible(true);
@@ -275,6 +317,7 @@ class RddStallWatcherConsumerTest {
                 public int events(String name){return (int)emitted.stream().filter(name::equals).count();}
                 public int observations(){return ap.reads;}
                 public int sent(){return sent;}
+                public int repeatClears(){return RddRepeatQueryWatcher.clears;}
                 public void set(String key,Object value){
                     switch(key){
                         case "inventory" -> ap.getInventory().items.get(0).count=(Integer)value;

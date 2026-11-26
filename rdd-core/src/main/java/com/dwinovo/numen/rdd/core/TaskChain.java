@@ -93,6 +93,13 @@ public final class TaskChain {
     private final java.util.Map<String, Integer> waivedStageKeys = new java.util.LinkedHashMap<>();
     /** 2026-11-07: sticky satisfied need keys (primaryId+planRevision+attempt+display). */
     private final Set<String> satisfiedNeedKeys = new LinkedHashSet<>();
+    /**
+     * 死亡/LOST 后局部失效的资源前提：当前一级 id → 原因。
+     *
+     * <p>只记录“为什么旧计划不能再被静默解冻”，不改写 goal/waitFor/resourceUses 声明，也不清
+     * 已完成事实、基地或历史。替换当前计划后显式清除；普通 {@link #resumeFromReplanning()} 拒绝清除。
+     */
+    private final Map<String, String> resourcePremiseInvalidations = new LinkedHashMap<>();
 
     /**
      * G3b：安全相关状态提交版本（IC75-r1 §15.2 的 {@code stateVersion} 最小落地）。
@@ -211,6 +218,7 @@ public final class TaskChain {
         satisfiedStages.clear(); satisfiedStages.addAll(source.satisfiedStages);
         waivedStageKeys.clear(); waivedStageKeys.putAll(source.waivedStageKeys);
         satisfiedNeedKeys.clear(); satisfiedNeedKeys.addAll(source.satisfiedNeedKeys);
+        resourcePremiseInvalidations.clear(); resourcePremiseInvalidations.putAll(source.resourcePremiseInvalidations);
         stateVersion = source.stateVersion; staleResultsIgnored = source.staleResultsIgnored;
         ownerEpoch = source.ownerEpoch; outstandingSafePoint = source.outstandingSafePoint;
         safePointSeq = source.safePointSeq; chainInstanceId = source.chainInstanceId;
@@ -248,6 +256,7 @@ public final class TaskChain {
         this.attempts.clear();
         this.acquireBaselines.clear();
         this.unobservedBaselines.clear();
+        this.resourcePremiseInvalidations.clear();
         this.primaryIndex = 0;
         this.subtaskIndex = 0;
         this.primaryStatus = PrimaryGoalStatus.PENDING;
@@ -425,6 +434,7 @@ public final class TaskChain {
      * 前置资产未到位 → 置 WAITING 并返回 false（监督方此时不该把它派给 AI，等资产到了再调）。
      */
     public synchronized boolean activateCurrent(Map<String, Integer> counts) {
+        if (resourcePremiseReevaluationRequired()) return false;
         if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
             throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
         }
@@ -450,6 +460,7 @@ public final class TaskChain {
 
     /** 同 {@link #activateCurrent(Map)}，但依赖门以真实注册表为准（P0-2 接线）。 */
     public synchronized boolean activateCurrentWithRegistry(AssetRegistry registry) {
+        if (resourcePremiseReevaluationRequired()) return false;
         if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
             throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
         }
@@ -481,6 +492,7 @@ public final class TaskChain {
      * 才是「实时扫描」的持有真相；world 资产仍由注册表另行提供（二级 world 条件走 RddWorldFacts）。
      */
     public synchronized boolean activateCurrentWithSnapshot(PlanningAssetSnapshot snapshot) {
+        if (resourcePremiseReevaluationRequired()) return false;
         if (primaryStatus != PrimaryGoalStatus.PENDING && primaryStatus != PrimaryGoalStatus.WAITING) {
             throw new IllegalStateException("only a not-yet-started primary may activate: " + primaryStatus);
         }
@@ -504,6 +516,9 @@ public final class TaskChain {
     }
 
     public synchronized void startCurrent() {
+        if (resourcePremiseReevaluationRequired()) {
+            throw new IllegalStateException("resource premises invalidated; current step cannot start");
+        }
         if (currentPrimary().unexpanded()) {
             throw new IllegalStateException("current primary unexpanded; expandCurrentPrimary(...) before start: "
                     + currentPrimary().id());
@@ -675,6 +690,173 @@ public final class TaskChain {
 
     /** Debug/tests: sticky key that is no longer covered by inventory. */
     public synchronized boolean isSatisfiedNeed(String key) { return satisfiedNeedKeys.contains(key); }
+
+    /** 局部资源前提失效回执；只列被降级的当前一级/二级，不改写历史完成事实。 */
+    public record ResourcePremiseInvalidation(List<String> invalidatedPrimaryIds, List<String> invalidatedSubtaskIds,
+                                              List<String> clearedSatisfiedNeedKeys, boolean unknownScope, String reason) {
+        public boolean reevaluationRequired() { return !invalidatedPrimaryIds.isEmpty(); }
+    }
+
+    /** 兼容默认入口：精确资产键丢失；空集表示“已知无损失”，不是 UNKNOWN。 */
+    public synchronized ResourcePremiseInvalidation invalidateResourcePremises(Collection<String> assetKeys) {
+        return invalidateResourcePremises(assetKeys, "resource premise invalidated by loss");
+    }
+
+    /**
+     * 死亡/LOST 后只失效当前一级中依赖丢失资源的未完成前提，并进入 REPLANNING 等重评。
+     * 已完成/跳过节点、satisfiedStages、goal 声明与真实世界历史一律保留。
+     *
+     * @throws IllegalStateException PENDING/WAITING/RECOVERING 尚未合法准入；宿主须先保存延迟重规划
+     */
+    public synchronized ResourcePremiseInvalidation invalidateResourcePremises(Collection<String> assetKeys, String reason) {
+        Set<String> lost = normalizedLostKeys(assetKeys);
+        if (lost.isEmpty()) return noResourceInvalidation(false, reason);
+        return invalidateCurrentResourcePremises(lost, false, reason);
+    }
+
+    /** UNKNOWN 死亡/丢失范围：不能因为没读到逐项表就假装当前资源前提仍成立。 */
+    public synchronized ResourcePremiseInvalidation invalidateAllResourcePremises(String reason) {
+        return invalidateCurrentResourcePremises(Set.of(), true, reason);
+    }
+
+    /**
+     * Read-only loss-impact projection for the host's admission decision.
+     *
+     * <p>PENDING/WAITING/RECOVERING must be able to retain a death handoff without rewriting the
+     * old plan. This query mirrors the mutation's affected-scope rules but changes no status,
+     * history, sticky need, execution metadata or state version.
+     */
+    public synchronized boolean wouldInvalidateResourcePremises(Collection<String> assetKeys, boolean unknownScope) {
+        if (currentPrimary() == null || primaryStatus == PrimaryGoalStatus.COMPLETED) return false;
+        return currentResourcePremisesAffected(normalizedLostKeys(assetKeys), unknownScope);
+    }
+
+    private static Set<String> normalizedLostKeys(Collection<String> assetKeys) {
+        Set<String> lost = new LinkedHashSet<>();
+        if (assetKeys != null) for (String key : assetKeys) if (key != null && !key.isBlank()) lost.add(key);
+        return lost;
+    }
+
+    private ResourcePremiseInvalidation invalidateCurrentResourcePremises(Set<String> lost, boolean unknownScope, String reason) {
+        String why = reason == null || reason.isBlank() ? "resource premise invalidated" : reason;
+        if (primaryStatus == PrimaryGoalStatus.COMPLETED) {
+            return noResourceInvalidation(unknownScope, why);
+        }
+        // Death facts may be recorded earlier, but the old chain is immutable until its replan is
+        // legally admitted. The host commits from the accepted callback (ACTIVE -> REPLANNING).
+        if (primaryStatus != PrimaryGoalStatus.ACTIVE && primaryStatus != PrimaryGoalStatus.REPLANNING) {
+            throw new IllegalStateException("resource premise invalidation requires admitted replanning: " + primaryStatus);
+        }
+        List<String> clearedNeeds = new ArrayList<>();
+        for (String key : satisfiedNeedKeys) {
+            if (unknownScope || stickyNeedAffected(key, lost)) clearedNeeds.add(key);
+        }
+        satisfiedNeedKeys.removeAll(clearedNeeds);
+
+        PrimaryGoal current = currentPrimary();
+        boolean waitForAffected = unknownScope || current.waitFor().stream()
+                .anyMatch(requirement -> lost.contains(requirement.assetKey()));
+        boolean equipmentAffected = unknownScope || current.equipmentTarget() != null
+                && current.equipmentTarget().values().stream().anyMatch(lost::contains);
+        boolean affected = currentResourcePremisesAffected(lost, unknownScope);
+        List<String> invalidated = new ArrayList<>();
+        for (Subtask subtask : current.subtasks()) {
+            SubtaskStatus status = statuses.get(subtask.id());
+            boolean unfinished = status != SubtaskStatus.COMPLETED && status != SubtaskStatus.SKIPPED
+                    && status != SubtaskStatus.INVALIDATED;
+            if (unfinished && (unknownScope || waitForAffected || equipmentAffected || subtaskAffected(subtask, lost))) {
+                statuses.put(subtask.id(), SubtaskStatus.INVALIDATED);
+                pauseReasons.remove(subtask.id());
+                forgetAcquireBaseline(subtask.id());
+                invalidated.add(subtask.id());
+            }
+        }
+        if (!affected) {
+            return new ResourcePremiseInvalidation(List.of(), List.of(), List.copyOf(clearedNeeds), false, why);
+        }
+        resourcePremiseInvalidations.put(current.id(), why);
+        // The host has already admitted ACTIVE -> REPLANNING. Keep that protection and invalidate
+        // only now; PENDING/WAITING/RECOVERING were rejected above without any partial write.
+        primaryStatus = PrimaryGoalStatus.REPLANNING;
+        clearExecutionMetadata();
+        stateVersion++;
+        return new ResourcePremiseInvalidation(List.of(current.id()), List.copyOf(invalidated),
+                List.copyOf(clearedNeeds), unknownScope, why);
+    }
+
+    private boolean currentResourcePremisesAffected(Set<String> lost, boolean unknownScope) {
+        PrimaryGoal current = currentPrimary();
+        if (current == null || primaryStatus == PrimaryGoalStatus.COMPLETED) return false;
+        boolean waitForAffected = unknownScope || current.waitFor().stream()
+                .anyMatch(requirement -> lost.contains(requirement.assetKey()));
+        boolean equipmentAffected = unknownScope || current.equipmentTarget() != null
+                && current.equipmentTarget().values().stream().anyMatch(lost::contains);
+        if (waitForAffected || equipmentAffected) return true;
+        for (Subtask subtask : current.subtasks()) {
+            SubtaskStatus status = statuses.get(subtask.id());
+            boolean unfinished = status != SubtaskStatus.COMPLETED && status != SubtaskStatus.SKIPPED
+                    && status != SubtaskStatus.INVALIDATED;
+            if (unfinished && (unknownScope || subtaskAffected(subtask, lost))) return true;
+        }
+        return false;
+    }
+
+    private static ResourcePremiseInvalidation noResourceInvalidation(boolean unknownScope, String reason) {
+        return new ResourcePremiseInvalidation(List.of(), List.of(), List.of(), unknownScope,
+                reason == null || reason.isBlank() ? "resource premise invalidated" : reason);
+    }
+
+    private static boolean subtaskAffected(Subtask subtask, Set<String> lost) {
+        if (subtask.resourceUses().stream().anyMatch(use -> lost.contains(use.assetKey()))) return true;
+        Map<String, Object> condition = subtask.condition();
+        if (condition.get("asset_key") instanceof String key && lost.contains(key)) return true;
+        if (condition.get("item") instanceof String item && lost.contains(item)) return true;
+        if (condition.get("group") instanceof String group && InventoryGroups.known(group)) {
+            for (String key : lost) if (InventoryGroups.contains(group, key)) return true;
+        }
+        return false;
+    }
+
+    private static boolean stickyNeedAffected(String stickyKey, Set<String> lost) {
+        int separator = stickyKey.lastIndexOf('|');
+        String display = separator < 0 ? stickyKey : stickyKey.substring(separator + 1);
+        if (lost.contains(display)) return true;
+        if (display.startsWith("group:") && InventoryGroups.known(display.substring("group:".length()))) {
+            String group = display.substring("group:".length());
+            for (String key : lost) if (InventoryGroups.contains(group, key)) return true;
+        }
+        return false;
+    }
+
+    /** 当前一级是否因资源丢失而等待显式重评；宿主只对此调用局部重规划，不每次死亡全链重跑。 */
+    public synchronized boolean resourcePremiseReevaluationRequired() {
+        return resourcePremiseInvalidations.containsKey(currentPrimary().id());
+    }
+
+    /**
+     * 已有明确恢复/核验证据时解除局部失效；仍回 PENDING 走依赖门，绝不直接恢复 RUNNING。
+     * 普通重规划回落不得调用本方法；调用方必须记录 evidence 文本。
+     */
+    public synchronized boolean resolveResourcePremiseInvalidation(String primaryId, String evidence) {
+        if (primaryId == null || evidence == null || evidence.isBlank()) {
+            throw new IllegalArgumentException("primary id and recovery evidence required");
+        }
+        if (!resourcePremiseInvalidations.containsKey(primaryId)) return false;
+        if (!currentPrimary().id().equals(primaryId)) {
+            throw new IllegalStateException("only current primary resource premises may be resolved");
+        }
+        resourcePremiseInvalidations.remove(primaryId);
+        for (Subtask subtask : currentPrimary().subtasks()) {
+            if (statuses.get(subtask.id()) == SubtaskStatus.INVALIDATED) {
+                statuses.put(subtask.id(), SubtaskStatus.PENDING);
+                pauseReasons.remove(subtask.id());
+            }
+        }
+        primaryStatus = PrimaryGoalStatus.PENDING;
+        clearExecutionMetadata();
+        stateVersion++;
+        return true;
+    }
 
     // ---- G3e：安全点凭据（签发/校验/消费/作废）----
 
@@ -923,6 +1105,10 @@ public final class TaskChain {
     /** REPLANNING 出口：宿主决定沿用现有二级计划 → 本级二级全量重置 PENDING，回到 PENDING 走依赖门/激活重跑。 */
     public synchronized void resumeFromReplanning() {
         if (primaryStatus != PrimaryGoalStatus.REPLANNING) throw new IllegalStateException("not replanning: " + primaryStatus);
+        if (resourcePremiseReevaluationRequired()) {
+            throw new IllegalStateException("resource premises invalidated; replace the plan before resuming: "
+                    + currentPrimary().id());
+        }
         PrimaryGoal cur = currentPrimary();
         if (cur.unexpanded()) throw new IllegalStateException("unexpanded primary cannot resume replanning: " + cur.id());
         requireMainline(cur.subtasks());
@@ -1043,6 +1229,7 @@ public final class TaskChain {
         List<PrimaryGoal> primaries = new ArrayList<>(goal.primaryGoals());
         primaries.set(primaryIndex, new PrimaryGoal(cur.id(), cur.description(), List.copyOf(generated), cur.waitFor(), false, cur.equipmentTarget()));
         goal = new Goal(goal.id(), goal.description(), primaries);
+        resourcePremiseInvalidations.remove(cur.id()); // a replacement plan supersedes the invalidated premise
         for (String freedId : freed) {
             statuses.remove(freedId);
             skipReasons.remove(freedId);
@@ -1409,7 +1596,7 @@ public final class TaskChain {
     /** RECOVERING 出口：停机恢复后宿主核实当前二级可继续 → 回到 ACTIVE，照常跑监督/完成判定。 */
     public synchronized void resumeFromRecovering() {
         if (primaryStatus != PrimaryGoalStatus.RECOVERING) throw new IllegalStateException("not recovering: " + primaryStatus);
-        primaryStatus = PrimaryGoalStatus.ACTIVE;
+        primaryStatus = resourcePremiseReevaluationRequired() ? PrimaryGoalStatus.REPLANNING : PrimaryGoalStatus.ACTIVE;
         stateVersion++;            // G3b：恢复裁决是一次安全提交（改变了在途语义）
         clearExecutionMetadata(); // 恢复续跑不是"同一执行"：旧执行身份/启动时间作废
     }
@@ -1672,6 +1859,9 @@ public final class TaskChain {
             primaryView.put("description", primary.description());
             primaryView.put("current", p == primaryIndex);
             primaryView.put("unexpanded", primary.unexpanded());
+            if (resourcePremiseInvalidations.containsKey(primary.id())) {
+                primaryView.put("resourcePremiseInvalidated", resourcePremiseInvalidations.get(primary.id()));
+            }
             if (!primary.waitFor().isEmpty()) {
                 List<Map<String, Object>> wf = new ArrayList<>();
                 for (AssetRequirement r : primary.waitFor()) {
@@ -1754,6 +1944,7 @@ public final class TaskChain {
         JsonArray needSat = new JsonArray();
         for (String k : satisfiedNeedKeys) needSat.add(k);
         o.add("satisfiedNeedKeys", needSat);
+        o.add("resourcePremiseInvalidations", GSON.toJsonTree(resourcePremiseInvalidations));
         o.addProperty("primaryIndex", primaryIndex);
         o.addProperty("subtaskIndex", subtaskIndex);
         o.addProperty("planRevision", planRevision);
@@ -1877,6 +2068,20 @@ public final class TaskChain {
         if (o.has("satisfiedNeedKeys") && o.get("satisfiedNeedKeys").isJsonArray()) {
             for (JsonElement e : o.getAsJsonArray("satisfiedNeedKeys")) {
                 if (!e.isJsonNull()) chain.satisfiedNeedKeys.add(e.getAsString());
+            }
+        }
+        if (o.has("resourcePremiseInvalidations")) {
+            if (!o.get("resourcePremiseInvalidations").isJsonObject()) {
+                throw new IllegalArgumentException("invalid resource premise invalidation table");
+            }
+            Set<String> primaryIds = new HashSet<>();
+            for (PrimaryGoal primary : goal.primaryGoals()) primaryIds.add(primary.id());
+            for (var entry : o.getAsJsonObject("resourcePremiseInvalidations").entrySet()) {
+                if (!primaryIds.contains(entry.getKey()) || !entry.getValue().isJsonPrimitive()
+                        || !entry.getValue().getAsJsonPrimitive().isString()) {
+                    throw new IllegalArgumentException("invalid resource premise invalidation entry: " + entry.getKey());
+                }
+                chain.resourcePremiseInvalidations.put(entry.getKey(), entry.getValue().getAsString());
             }
         }
         if (o.has("lastStartedAtMillis")) {
@@ -2165,6 +2370,13 @@ public final class TaskChain {
                     report.droppedPauseReasons(), java.util.List.copyOf(strayBaselines));
         }
         PrimaryGoal current = goal.primaryGoals().get(primaryIndex);
+        if (resourcePremiseInvalidations.containsKey(current.id())
+                && primaryStatus != PrimaryGoalStatus.REPLANNING
+                && primaryStatus != PrimaryGoalStatus.PENDING
+                && primaryStatus != PrimaryGoalStatus.WAITING
+                && primaryStatus != PrimaryGoalStatus.RECOVERING) {
+            throw new IllegalArgumentException("resource-invalidated current primary cannot be ACTIVE");
+        }
         // 完成事实层自洽：非终态的当前一级不得是被事实命中的阶段（否则永远停在已达成阶段）
         if (primaryStatus != PrimaryGoalStatus.COMPLETED && isSatisfied(primaryIndex)) {
             throw new IllegalArgumentException("current primary is fact-satisfied but chain is not COMPLETED: " + current.id());

@@ -17,13 +17,20 @@ import java.util.UUID;
  */
 public final class ToolCallObserver {
 
-    /** 一次已发生的工具调用（参数只给长度，避免把整段 JSON 传给观察者）。 */
+    /** 一次已发生的工具调用（兼容观察者只接收参数长度）。 */
     @FunctionalInterface
     public interface Listener {
         void onToolCall(UUID companionId, String toolCallId, String toolName, int argsChars);
     }
 
+    /** Raw-argument observer for producers that can prove canonical equality. */
+    @FunctionalInterface
+    public interface RawArgumentsListener {
+        void onToolCall(UUID companionId, String toolCallId, String toolName, String argsJson);
+    }
+
     private static volatile Listener listener;
+    private static volatile RawArgumentsListener rawListener;
 
     private ToolCallObserver() {}
 
@@ -31,19 +38,40 @@ public final class ToolCallObserver {
         listener = l;
     }
 
+    /** Installing the raw seam replaces legacy delivery, so one call is never reported twice. */
+    public static void installRawArguments(RawArgumentsListener l) {
+        rawListener = l;
+    }
+
     public static void clear() {
         listener = null;
+        rawListener = null;
     }
 
     /** 由服务端工具派发路径调用；任何异常都不许冒泡。 */
     public static void fire(UUID companionId, String toolCallId, String toolName, int argsChars) {
         Listener l = listener;
-        if (l == null || toolName == null) return;
+        if (l == null || rawListener != null || toolName == null) return;
         try {
             l.onToolCall(companionId, toolCallId == null ? "" : toolCallId, toolName, argsChars);
         } catch (RuntimeException ignored) {
             // 观察者自己的问题不许影响工具调用
         }
+    }
+
+    /** Raw production entry; the payload is read-only and never retained by this observer. */
+    public static void fireWithArguments(UUID companionId, String toolCallId, String toolName, String argsJson) {
+        if (toolName == null) return;
+        RawArgumentsListener raw = rawListener;
+        if (raw != null) {
+            try {
+                raw.onToolCall(companionId, toolCallId == null ? "" : toolCallId, toolName, argsJson);
+            } catch (RuntimeException ignored) {
+                // 观察者自己的问题不许影响工具调用
+            }
+            return;
+        }
+        fire(companionId, toolCallId, toolName, argsJson == null ? 0 : argsJson.length());
     }
 
     /** 兼容旧调用点：没有 call id 当作内部调用（""）。 */

@@ -37,23 +37,42 @@ class RddDeathPreparationWiringTest {
         assertTrue(host.contains("DeathPreparationHost.holdRecoveryPause(ap.getUUID(), ENGINE, chain, port"));
         assertTrue(seam.contains("DeathPreparation.reopenPaused(engine, id, chain, port)"),"existing paused recheck must have an actual bounded recovery consumer");
     }
+    @Test void emptyDeathBatchStillOpensProtectedRecoveryAndUnknownItemsCannotBecomeAbsent() throws Exception {
+        String plugin=source("RddPlugin"), host=source("SideTaskHost");
+        Path root=Path.of("").toAbsolutePath();
+        while (root!=null && !Files.isDirectory(root.resolve("plugins/rdd/src/main/java"))) root=root.getParent();
+        assertNotNull(root);
+        String trigger=Files.readString(root.resolve("rdd-core/src/main/java/com/dwinovo/numen/rdd/side/death/DeathRecoverySideTaskTrigger.java"));
+        assertFalse(plugin.contains("if (death != null && !death.lostItems().isEmpty())"),
+                "death itself, not a nonempty instantaneous item table, admits the protected path");
+        assertTrue(plugin.contains("SideTaskHost.expectDeathRecovery(companionId, death.seq(),"));
+        assertTrue(trigger.contains("lost_items_state"));
+        assertTrue(host.contains("DeathRecoverySideTaskType.hasUnknownLostItems(task)"),
+                "the real world consumer must refuse absence inference for an empty item table");
+    }
     @Test void terminalCommitRechecksPreparationAndPauseHasNoOrdinaryConditionTimeoutBypass() throws Exception {
         String plugin=source("RddPlugin"), detector=source("RddDetector"), host=source("SideTaskHost");
-        assertTrue(plugin.contains("DeathPreparationHost.settlementIdentity(companionId, seq, task, rt)"));
+        assertTrue(plugin.contains("DeathPreparationHost.settlementIdentity(companionId, seq, prepareTask, settlementRuntime)"));
         assertTrue(plugin.contains("DeathPreparationHost.settlementKey(companionId, seq, preparationHandled, prepareTask)"));
         assertTrue(plugin.contains("SideTaskHost.deathPreparationResult(companionId, preparePayload)"));
-        assertTrue(plugin.contains("DeathPreparationHost.settlePreparation(rt.chain(), preparePayload, prepareReason, evidence)"));
+        assertTrue(plugin.contains("DeathPreparationHost.settlePreparation(settlementRuntime.chain(),"));
         assertTrue(plugin.contains("if (!preparation.accepted()) return false"));
         assertTrue(plugin.indexOf("SideTaskHost.deathPreparationResult(companionId, preparePayload)")
-                < plugin.indexOf("DeathPreparationHost.settlePreparation(rt.chain(), preparePayload, prepareReason, evidence)"));
+                < plugin.indexOf("DeathPreparationHost.settlePreparation(settlementRuntime.chain(),"));
         assertTrue(plugin.contains("return preparationHandled && preparationIdentityValid && prepareVerified"));
         assertTrue(plugin.contains("DEATH_SETTLEMENTS.remove(claimedKey)"));
         assertTrue(plugin.indexOf("\"preparation_settlement_in_progress\"") < plugin.indexOf("RddRepairDispatch.recomputeAfterDeath(companionId, counts, confirmedLost"));
         assertEquals(3L, host.lines().filter(line -> line.contains("data.put(\"prepareSettlementAccepted\", RddPlugin.onDeathRecoverySettled")).count(),
                 "normal, decline and cancel copies must all return permission to the original terminal data");
+        assertTrue(host.contains("\"side_task_declined\".equals(event) && blankReason"));
+        assertTrue(host.contains("\"side_task_cancelled\".equals(event) && blankReason"));
+        assertTrue(host.contains("patched.put(\"terminal_reason\", \"executor_declined_recovery\")"));
+        assertTrue(host.contains("patched.put(\"terminal_reason\", \"recovery_cancelled\")"));
         assertTrue(detector.indexOf("handlePaused(ap, rt, chain, counts)", detector.indexOf("// Recheck recovery before wait_for"))
                 < detector.indexOf("if (ps == PrimaryGoalStatus.PENDING || ps == PrimaryGoalStatus.WAITING)"));
-        assertTrue(plugin.contains("boolean shouldReplan = !recovered && !preparationHandled"));
+        assertTrue(plugin.contains("boolean shouldReplan = recoveryOwnsCurrentMainline"));
+        assertTrue(plugin.contains("boolean recoveryNeedsReplan = preparationHandled ? !preparationCleared : !recovered"));
+        assertTrue(plugin.contains("RddReplanTransition.Trigger.DEATH"));
         assertTrue(detector.indexOf("SideTaskHost.holdRecoveryPause(ap, chain)") < detector.indexOf("if (conditionMatches(ap, cur, counts))"));
         assertTrue(host.contains("RddDeathEquipment.read(service, ap.getUUID(), worldId()"));
     }

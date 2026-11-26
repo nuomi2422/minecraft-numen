@@ -33,8 +33,8 @@ import java.util.UUID;
  */
 final class RddReplanTransition {
 
-    /** 谁发起的重规划：失败卡死 / 士兵协商 / 生存（安全）抢占。 */
-    enum Trigger { FAILURE, NEGOTIATION, SURVIVAL }
+    /** 谁发起的重规划：失败卡死 / 士兵协商 / 生存（安全）抢占 / 死亡恢复。 */
+    enum Trigger { FAILURE, NEGOTIATION, SURVIVAL, DEATH }
 
     /** 准入结果；除 ACCEPTED 外都表示链未进入 REPLANNING。 */
     enum Outcome {
@@ -152,7 +152,8 @@ final class RddReplanTransition {
         markAborted(companionId, token);
         // 安全观测可能已清 marker，原有效回调仍须回落；旧生命周期回调由原 ticket 拦截。
         if ((current == null || sameScope(current, chain)) && chain != null
-                && chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) {
+                && chain.primaryStatus() == PrimaryGoalStatus.REPLANNING
+                && !chain.resourcePremiseReevaluationRequired()) {
             chain.resumeFromReplanning();
         }
     }
@@ -238,14 +239,12 @@ final class RddReplanTransition {
         SURVIVAL_PREEMPT_AT.remove(companionId);
     }
 
-    /** 死亡打断 PENDING：先作废原异步票，再回落原链，不能留下永远 REPLANNING。 */
+    /** 死亡打断 PENDING：作废旧异步票并保留 REPLANNING 保护，恢复结算再重评，不静默解冻旧链。 */
     static void onDeath(UUID companionId, TaskChain chain, Runnable invalidatePlanning) {
         // 即使刚观察过安全并清了 marker，死亡前的规划也属于旧身体，仍须作废原票。
         invalidatePlanning.run();
         invalidate(companionId);
-        if (chain != null && chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) {
-            chain.resumeFromReplanning();
-        }
+        if (chain != null) chain.bumpOwnerEpoch(); // old-body safe points and callbacks cannot survive death
     }
 
     /** ServerStoppedEvent：静态内存不得带进同存档的下一次 server。 */
@@ -272,8 +271,11 @@ final class RddReplanTransition {
             return new Result(Outcome.BUDGET_EXHAUSTED, "replan budget exhausted: " + used + "/" + limit);
         }
         try {
-            if (trigger == Trigger.NEGOTIATION || trigger == Trigger.SURVIVAL) {
-                // 事实变化类（协商、生存抢占）复用现成的 ACTIVE 转换：允许 RUNNING，
+            if (trigger == Trigger.DEATH && chain.primaryStatus() == PrimaryGoalStatus.REPLANNING) {
+                // Death already invalidated the old body's in-flight plan. Keep that protection and
+                // issue one fresh bounded recovery request instead of resuming the pre-death plan.
+            } else if (trigger == Trigger.NEGOTIATION || trigger == Trigger.SURVIVAL || trigger == Trigger.DEATH) {
+                // 事实变化类（协商、生存抢占、死亡恢复）复用现成的 ACTIVE 转换：允许 RUNNING，
                 // 且不把旧二级伪标成 FAILED/STALLED；STUCK guard 原样保留给 FAILURE。
                 chain.enterReplanningFromNegotiation(reason);
             } else {

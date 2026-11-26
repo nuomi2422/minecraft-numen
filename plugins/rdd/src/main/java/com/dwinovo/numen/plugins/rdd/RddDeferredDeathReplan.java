@@ -15,22 +15,39 @@ import java.util.concurrent.ConcurrentHashMap;
  * It must then be claimed <b>exactly once</b> by the real owner chain, and it must be
  * <b>dropped</b> — never retried — as soon as chain/revision/death identity changed.
  *
- * <p>Boundaries: this class owns the pending map and that decision only. Building the request,
- * the expansion gates, requestReplan, the rejection side-effect and the monitor event stay in
- * {@code RddPlugin}. A non-current caller or a non-ACTIVE primary keeps the handoff; only an
- * identity mismatch drops it.
+ * <p>Boundaries: this class owns the pending map, captured loss scope and claim decision only.
+ * Building the request, expansion gates, requestReplan, the accepted resource-premise commit and
+ * monitor event stay in {@code RddPlugin}. A non-current caller or a non-ACTIVE primary keeps the
+ * handoff; only an identity mismatch drops it.
  */
 final class RddDeferredDeathReplan {
     private RddDeferredDeathReplan() {}
 
-    record Handoff(TaskChain owner, String primaryId, int planRevision, int deathSeq, String reason) {}
+    record ResourceLoss(Map<String, Integer> lostItems, boolean known, String source) {
+        ResourceLoss {
+            lostItems = lostItems == null ? Map.of() : Map.copyOf(lostItems);
+            source = source == null || source.isBlank() ? "unknown" : source;
+        }
+
+        public static ResourceLoss unknown(String source) {
+            return new ResourceLoss(Map.of(), false, source);
+        }
+    }
+
+    record Handoff(TaskChain owner, String primaryId, int planRevision, int deathSeq, String reason,
+                   ResourceLoss resourceLoss) {}
 
     private static final Map<UUID, Handoff> PENDING = new ConcurrentHashMap<>();
 
     /** Keep expanded work until initial or restored admission; never resume it from settlement. */
     static void defer(UUID companionId, TaskChain chain, int deathSeq, String reason) {
+        defer(companionId, chain, deathSeq, reason, null);
+    }
+
+    /** Retain the exact loss scope with the request so admission can commit it atomically. */
+    static void defer(UUID companionId, TaskChain chain, int deathSeq, String reason, ResourceLoss resourceLoss) {
         PENDING.put(companionId, new Handoff(chain, chain.currentPrimary().id(),
-                chain.planRevision(), deathSeq, reason));
+                chain.planRevision(), deathSeq, reason, resourceLoss));
     }
 
     /** Read the current handoff once; a later claim compares identity against this exact value. */

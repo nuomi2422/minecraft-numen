@@ -41,6 +41,9 @@ public final class Menace {
     /** 原版 {@code Creeper.explosionRadius} 默认值;充能的翻倍。NBT 改过的少见,不追。 */
     private static final double CREEPER_BLAST_RADIUS = 3.0;
 
+    /** 原版爬行者中心距小于 3 格开始点火；举盾必须在这个线之前再留五刻生效余量。 */
+    public static final double CREEPER_IGNITION_DISTANCE = 3.0;
+
     /** 末影水晶被打碎时的爆炸威力,原版写死 {@code 6.0F}。它没有引信,打碎即炸。 */
     private static final double CRYSTAL_BLAST_RADIUS = 6.0;
 

@@ -46,6 +46,14 @@ class MenaceTest {
         assertEquals(Math.hypot(perAxis, perAxis), radius, 1e-9);
     }
 
+    /** 未点火爬行者举盾必须从三点火线起算，不能沿用约 2.73 格的近战危险半径。 */
+    @Test
+    void creeperShieldThresholdStartsAtIgnitionLine() {
+        double meleeDanger = strikeRange(0.6, 0.6) + Math.sqrt(2.0) / 2.0;
+        assertEquals(3.0, Menace.CREEPER_IGNITION_DISTANCE, 1.0e-9);
+        assertTrue(Menace.CREEPER_IGNITION_DISTANCE > meleeDanger);
+    }
+
     /** 越宽的怪够得越远——这就是它不能是个常数的原因。 */
     @Test
     void widerMobsReachFurther() {

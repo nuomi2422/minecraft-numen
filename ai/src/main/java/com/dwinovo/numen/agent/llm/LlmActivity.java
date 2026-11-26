@@ -84,7 +84,7 @@ public final class LlmActivity {
 
     private static final class State {
         final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
-        String phase;
+        volatile String phase;
         volatile String lastFinish;
         volatile int lastToolCalls = -1;
         /** 连续「回答完但零工具调用」的轮数；带工具调用即归零。 */
@@ -97,9 +97,28 @@ public final class LlmActivity {
     private static final Map<String, State> STATES = new ConcurrentHashMap<>();
     /** token -> 发出时刻的单调纳秒。 */
     private static final Map<Long, Long> TOKEN_NANOS = new ConcurrentHashMap<>();
+    private static final Map<Long, String> TOKEN_PHASES = new ConcurrentHashMap<>();
     private static final AtomicLong TOKENS = new AtomicLong();
 
+    /** Observes one settled request. visibleText is assistant content, never hidden reasoning. */
+    @FunctionalInterface
+    public interface SettledListener {
+        void onSettled(String companionId, long token, String phase, String finish,
+                       int toolCalls, String visibleText);
+    }
+
+    private static volatile SettledListener settledListener;
+
     private LlmActivity() {}
+
+    /** Optional read-only consumer; observer failures are isolated from the LLM request. */
+    public static void installSettledListener(SettledListener listener) {
+        settledListener = listener;
+    }
+
+    public static void clearSettledListener() {
+        settledListener = null;
+    }
 
     /**
      * 认领身份：这条观察挂在哪个同伴名下，并发一个<b>本次请求专属的 token</b>。
@@ -114,7 +133,10 @@ public final class LlmActivity {
         long token = TOKENS.incrementAndGet();
         long now = System.nanoTime();
         TOKEN_NANOS.put(token, now);
-        STATES.computeIfAbsent(companionId, id -> new State(phase)).inFlight.add(token);
+        TOKEN_PHASES.put(token, phase);
+        State state = STATES.computeIfAbsent(companionId, id -> new State(phase));
+        state.phase = phase;
+        state.inFlight.add(token);
         return token;
     }
 
@@ -126,11 +148,21 @@ public final class LlmActivity {
      * @param toolCalls 本次带的工具调用数；失败时传 -1
      */
     public static void markSettled(String companionId, long token, String finish, int toolCalls) {
+        markSettled(companionId, token, finish, toolCalls, null);
+    }
+
+    /**
+     * Same token settlement as above, plus the completed assistant-visible text.
+     * The text is handed to an optional observer once and is never retained here.
+     * Duplicate/failure fallback settlement is a no-op, not another response.
+     */
+    public static void markSettled(String companionId, long token, String finish, int toolCalls,
+                                   String visibleText) {
         if (isBlank(companionId) || token == 0L) return;
         State st = STATES.get(companionId);
-        if (st == null) return; // 已被 forget() 清掉：<b>不重插</b>（否则迟到落地会把行塞回来）
-        st.inFlight.remove(token);
+        if (st == null || !st.inFlight.remove(token)) return; // forgotten, stale or already settled
         TOKEN_NANOS.remove(token);
+        String phase = TOKEN_PHASES.remove(token);
         st.lastFinish = finish;
         st.lastToolCalls = toolCalls;
         // 连续「回答完但零工具调用」计数（2026-10-01）：这是真正能区分卡住/想得慢的信号。
@@ -139,6 +171,14 @@ public final class LlmActivity {
             st.consecutiveNoToolCallResponses++;
         } else if (toolCalls > 0) {
             st.consecutiveNoToolCallResponses = 0;   // 真动手了就归零
+        }
+        SettledListener listener = settledListener;
+        if (listener != null) {
+            try {
+                listener.onSettled(companionId, token, phase, finish, toolCalls, visibleText);
+            } catch (RuntimeException ignored) {
+                // 观测层不许影响 LLM 返回值
+            }
         }
     }
 
@@ -189,13 +229,21 @@ public final class LlmActivity {
     public static void forget(String companionId) {
         if (isBlank(companionId)) return;
         State st = STATES.remove(companionId);
-        if (st != null) st.inFlight.clear();
+        if (st != null) {
+            for (Long token : st.inFlight) {
+                TOKEN_NANOS.remove(token);
+                TOKEN_PHASES.remove(token);
+            }
+            st.inFlight.clear();
+        }
     }
 
     /** 只给单测用：清空整张表。 */
     static void reset() {
         STATES.clear();
         TOKEN_NANOS.clear();
+        TOKEN_PHASES.clear();
+        settledListener = null;
     }
 
     private static boolean isBlank(String s) {

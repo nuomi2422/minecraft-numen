@@ -1,6 +1,7 @@
 package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.agent.tool.ToolRegistry;
+import com.dwinovo.numen.entity.DeathInventorySnapshot;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.HardCodedEvaluator;
@@ -156,6 +157,9 @@ final class RddDetector {
             }
             // 2026-10-25：每 tick 记账「这只同伴的真身体」——读世界（箱子存货）只认这个实例。
             RddCompanionBody.remember(ap);
+            // A death-window body is not current task capability. Preserve the pre-death cache
+            // (or leave it untouched when evidence is UNKNOWN) and skip all living runtime work.
+            if (freezeDeathInventoryAndSkip(ap)) continue;
             long tick = RddClock.current(ap.serverLevel());   // 唯一 tick 来源（见 RddClock）
             // 039 U1：environment 主题由这里按 5 秒节奏显式刷新——读口只读缓存，没人刷就永远 PENDING。
             // 只放在服务端 tick，绝不在上下文组装线程里做。
@@ -652,8 +656,9 @@ final class RddDetector {
             // 放在 EarlyAchievement 连跳之后，拍醒的一定是真正在执行的那个二级。
             RddPlugin.kickoffNudge(ap.getUUID(), chain, RddPlugin.captureObservationToken(ap.getServer()));
             Subtask current = chain.currentSubtask();
-            // AI_ASSISTED 二级交还 AI 驱动，不做卡死监督（保持原语义）。
+            // AI_ASSISTED 二级交还 AI 驱动，不做卡死监督；真实生产进展仍清除旧重复证据。
             if (current.detectionMode() != DetectionMode.HARD_CODED) {
+                stallWatcher.observeProgress(ap, rt, current);
                 return;
             }
             if (chain.currentSubtaskStatus() != SubtaskStatus.RUNNING) {
@@ -1248,8 +1253,27 @@ final class RddDetector {
         return 0;
     }
 
-    /** Existing caller boundary; inventory interpretation belongs to the stateless projection. */
+    /**
+     * Freeze only the inventory cache during a death window. Missing evidence must not write an
+     * empty corpse inventory over the last living cache. Returning true also prevents ordinary
+     * container/runtime/side-task processing from treating the frozen death fact as live holdings.
+     */
+    private static boolean freezeDeathInventoryAndSkip(NumenPlayer ap) {
+        if (!ap.deathPending()) return false;
+        ap.deathInventorySnapshot().ifPresent(snapshot -> {
+            if (snapshot.belongsTo(ap)) {
+                RddPlugin.cacheInventory(ap.getUUID(), snapshot.inventory());
+            }
+        });
+        return true;
+    }
+
+    /** Existing caller boundary; death consumers read the frozen pre-clear fact when present. */
     static Map<String, Integer> countInventory(NumenPlayer ap) {
+        DeathInventorySnapshot snapshot = ap.deathInventorySnapshot().orElse(null);
+        if (snapshot != null && snapshot.belongsTo(ap)) {
+            return snapshot.inventory();
+        }
         return RddInventoryProjection.countInventory(ap);
     }
 

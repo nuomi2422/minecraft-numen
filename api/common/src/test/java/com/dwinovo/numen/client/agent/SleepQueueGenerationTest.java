@@ -40,8 +40,11 @@ class SleepQueueGenerationTest {
         sources.put("com.dwinovo.numen.api.Internal","package com.dwinovo.numen.api; public @interface Internal {}");
         sources.put("com.dwinovo.numen.Constants","package com.dwinovo.numen; public class Constants {public static final Log LOG=new Log();public static class Log{public void info(String s,Object...a){}public void warn(String s,Object...a){}}}");
         sources.put("net.minecraft.client.player.AbstractClientPlayer","package net.minecraft.client.player; public class AbstractClientPlayer {}");
-        sources.put("com.google.gson.JsonObject","package com.google.gson; public class JsonObject {}");
+        sources.put("com.google.gson.JsonElement","package com.google.gson; public class JsonElement {public boolean isJsonPrimitive(){return false;} public String getAsString(){return \"\";}}");
+        sources.put("com.google.gson.JsonObject","package com.google.gson; public class JsonObject extends JsonElement {public boolean has(String key){return false;} public JsonElement get(String key){return new JsonElement();} public JsonObject addProperty(String key,String value){return this;}}");
         sources.put("com.google.gson.JsonParser","package com.google.gson; public class JsonParser {public static JsonParser parseString(String s){return new JsonParser();} public JsonObject getAsJsonObject(){return new JsonObject();}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallLoopWatch","package com.dwinovo.numen.agent.tool; public class ToolCallLoopWatch {public static String onRejected(Object...a){return null;} public static String onResult(Object...a){return null;}}");
+        sources.put("com.dwinovo.numen.agent.tool.ToolCallObserver","package com.dwinovo.numen.agent.tool; public class ToolCallObserver {public static void fireWithArguments(Object...a){}}");
         sources.put("com.dwinovo.numen.agent.provider.AssistantTurn","package com.dwinovo.numen.agent.provider; public record AssistantTurn(String content,java.util.List<Object> toolCalls,Object extras) {}");
         sources.put("com.dwinovo.numen.agent.tool.ClientToolContext","package com.dwinovo.numen.agent.tool; public record ClientToolContext(net.minecraft.client.player.AbstractClientPlayer entity,java.util.UUID entityUuid) implements ToolAnchor {}");
         sources.put("com.dwinovo.numen.agent.tool.NumenTool","package com.dwinovo.numen.agent.tool; public interface NumenTool {String name();void invoke(ToolCall call);default boolean externalOnly(){return false;}}");

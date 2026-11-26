@@ -29,7 +29,8 @@ class RddDeathFactsConsumerTest {
         Path plugin=root().resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd");
         String source=Files.readString(plugin.resolve("RddPlugin.java")).replace("\r\n","\n");
         StringBuilder body=new StringBuilder(HEAD);
-        for(String signature:List.of("    private static Map<String, Integer> deathInstantCounts(",
+        for(String signature:List.of("    private record DeathInstantCounts(",
+                "    private static DeathInstantCounts deathInstantCounts(",
                 "    private static void recordDeathLostHistory(", "    static void recordHistoryLost(",
                 "    public static AssetHistory history(", "    static void saveHistory(",
                 "    static void ensureLedgerLoaded(", "    static void saveLedger(",
@@ -37,7 +38,7 @@ class RddDeathFactsConsumerTest {
             body.append(method(source,signature));
         // Verbatim record/cause/catch/save block, but NOT the surrounding death callback.
         body.append("public static RddDeathLedger.Death ledger(UUID id, int lost) { ensureLedgerLoaded(id); NumenPlayer body=BODY; UUID companionId=id;\n")
-                .append(between(source,"            Map<String, Integer> lostItems = deathInstantCounts(body);",
+                .append(between(source,"            DeathInstantCounts deathCounts = deathInstantCounts(body);",
                         "            Map<String, Object> invalidatedData = new LinkedHashMap<>();"))
                 .append("return death; }\n");
         body.append(between(source,"private static String safeDeathCauseId(","/** 死亡即饿死代理判据（埋点）：死亡瞬间食物条为 0 → starvation。best-effort，失败回 false */"));
@@ -45,15 +46,19 @@ class RddDeathFactsConsumerTest {
         Path java=compiled.resolve("RddPlugin.java");Files.writeString(java,body.toString());
         Path pos=compiled.resolve("BlockPos.java");
         Files.writeString(pos,"package net.minecraft.core; public record BlockPos(int x,int y,int z) { public int getX(){return x;} public int getY(){return y;} public int getZ(){return z;} public String toShortString(){return x+\", \"+y+\", \"+z;} }");
+        Path snapshot=compiled.resolve("DeathInventorySnapshot.java");
+        Files.writeString(snapshot,"package com.dwinovo.numen.entity; import java.util.*; public record DeathInventorySnapshot(UUID companionId,int bodyEntityId,long deathGeneration,Map<String,Integer> inventory) { public DeathInventorySnapshot { inventory=Collections.unmodifiableMap(new LinkedHashMap<>(inventory)); } public boolean isEmpty(){return inventory.isEmpty();} }");
+        Path companions=compiled.resolve("Companions.java");
+        Files.writeString(companions,"package com.dwinovo.numen.entity; import java.util.*; public final class Companions { public static final Map<UUID,DeathInventorySnapshot> SNAPSHOTS=new HashMap<>(); public static Optional<DeathInventorySnapshot> deathInventorySnapshot(UUID id,int bodyEntityId){return Optional.ofNullable(SNAPSHOTS.get(id)).filter(s->s.bodyEntityId()==bodyEntityId);} }");
         List<String> args=new ArrayList<>(List.of("-encoding","UTF-8","-proc:none","-classpath",
                 location(TaskChain.class)+File.pathSeparator+location(Gson.class)+File.pathSeparator+System.getProperty("java.class.path"),
-                "-d",compiled.toString(),java.toString(),pos.toString()));
+                "-d",compiled.toString(),java.toString(),pos.toString(),snapshot.toString(),companions.toString()));
         for(String name:List.of("RddDeathLedgerStore","RddHistoryStore")) args.add(plugin.resolve(name+".java").toString());
         var compiler=ToolProvider.getSystemJavaCompiler();assertNotNull(compiler,"SETUP ERROR: JDK required");
         assertEquals(0,compiler.run(null,null,null,args.toArray(String[]::new)),"SETUP ERROR: original consumers must compile");
         loader=new URLClassLoader(new URL[]{compiled.toUri().toURL()},RddDeathFactsConsumerTest.class.getClassLoader()) {
             @Override protected Class<?> loadClass(String name,boolean resolve) throws ClassNotFoundException {
-                if(name.startsWith("com.dwinovo.numen.plugins.rdd.") || name.equals("net.minecraft.core.BlockPos")) {
+                if(name.startsWith("com.dwinovo.numen.plugins.rdd.") || name.startsWith("com.dwinovo.numen.entity.") || name.equals("net.minecraft.core.BlockPos")) {
                     Class<?> c=findLoadedClass(name);if(c==null){try{c=findClass(name);}catch(ClassNotFoundException ignored){}}
                     if(c!=null){if(resolve)resolveClass(c);return c;}
                 }return super.loadClass(name,resolve);
@@ -68,23 +73,56 @@ class RddDeathFactsConsumerTest {
     void sample(Map<String,Integer> live,Map<String,Integer> cached,boolean fail) throws Exception {
         call("sample",new Class<?>[]{Map.class,Map.class,boolean.class},live,cached,fail);
     }
-    @SuppressWarnings("unchecked") Map<String,Integer> counts() throws Exception {return (Map<String,Integer>)call("counts",new Class<?>[0]);}
+    void sampleSnapshot(Map<String,Integer> snapshot,boolean retainedOnly) throws Exception {
+        call("sampleSnapshot",new Class<?>[]{Map.class,boolean.class},snapshot,retainedOnly);
+    }
+    @SuppressWarnings("unchecked") Map<String,Integer> counts() throws Exception {
+        return (Map<String,Integer>)call("counts",new Class<?>[0]);
+    }
+    boolean known() throws Exception {return (boolean)call("known",new Class<?>[0]);}
+    String source() throws Exception {return (String)call("source",new Class<?>[0]);}
     RddDeathLedger.Death record() throws Exception {return (RddDeathLedger.Death)call("ledger",new Class<?>[]{UUID.class,int.class},id,2);}
 
-    @Test void liveCountsWinAndAreFrozenBeforeLedgerPersistence() throws Exception {
+    @Test void liveFallbackCountsWinAndAreFrozenButRemainUnknownAsDeathFact() throws Exception {
         Map<String,Integer> live=new HashMap<>(Map.of(SWORD,1));sample(live,Map.of(BREAD,9),false);
         Map<String,Integer> captured=counts();live.put(SWORD,4);
         assertEquals(Map.of(SWORD,1),captured);assertThrows(UnsupportedOperationException.class,()->captured.put(BREAD,1));
+        assertFalse(known());assertEquals("live_fallback",source());
         var death=record();assertEquals(Map.of(SWORD,4),death.lostItems());
         assertEquals("fall|attacker=zombie",death.cause());
         assertEquals(death, RddDeathLedgerStore.load(dir.resolve("ledger"),id).deaths().get(0));
     }
+
+    @Test void exactBodySnapshotWinsOverClearedLiveAndStaleCache() throws Exception {
+        sample(Map.of(),Map.of(BREAD,9),false);
+        sampleSnapshot(Map.of(SWORD,1),false);
+        assertEquals(Map.of(SWORD,1),counts());
+        assertTrue(known());assertEquals("death_snapshot",source());
+        assertEquals(Map.of(SWORD,1),record().lostItems());
+    }
+
+    @Test void presentEmptySnapshotIsKnownEmptyAndDoesNotFallBack() throws Exception {
+        sample(Map.of(SWORD,1),Map.of(BREAD,9),false);
+        sampleSnapshot(Map.of(),false);
+        assertTrue(counts().isEmpty());assertTrue(known());assertEquals("death_snapshot_empty",source());
+        assertTrue(record().lostItems().isEmpty());
+    }
+
+    @Test void exactRetainedSnapshotCanSupplyBodyFactButWrongBodyCannot() throws Exception {
+        sample(Map.of(),Map.of(BREAD,9),false);
+        sampleSnapshot(Map.of(SWORD,1),true);
+        assertEquals(Map.of(SWORD,1),counts());assertTrue(known());assertEquals("death_snapshot",source());
+        call("wrongBody",new Class<?>[0]);
+        assertEquals(Map.of(BREAD,9),counts());assertFalse(known());assertEquals("last_inventory_fallback",source());
+    }
     @Test void emptyOrThrowingLiveUsesExistingCacheWithoutConsumingIt() throws Exception {
         for(boolean fail:List.of(false,true)) {
             sample(Map.of(),Map.of(BREAD,3),fail);assertEquals(Map.of(BREAD,3),counts());
+            assertFalse(known());assertEquals("last_inventory_fallback",source());
             assertEquals(Map.of(BREAD,3),record().lostItems());assertEquals(Map.of(BREAD,3),counts());
         }
-        sample(Map.of(),Map.of(),false);assertTrue(record().lostItems().isEmpty());
+        sample(Map.of(),Map.of(),false);assertTrue(counts().isEmpty());assertFalse(known());assertEquals("unknown",source());
+        assertTrue(record().lostItems().isEmpty());
         assertEquals(RddDeathLedger.State.UNVERIFIED,RddDeathLedger.latest(id).state(),"empty is not confirmed lost/recovered");
     }
     @Test void restoreOldLedgerBeforeNewRecordAndDoNotReloadOverLive() throws Exception {
@@ -133,25 +171,38 @@ class RddDeathFactsConsumerTest {
     static final String HEAD="""
         package com.dwinovo.numen.plugins.rdd;
         import java.util.*;import java.nio.file.*;import java.io.IOException;
-        import com.dwinovo.numen.rdd.core.*;import net.minecraft.core.BlockPos;
+        import com.dwinovo.numen.rdd.core.*;import com.dwinovo.numen.entity.DeathInventorySnapshot;import com.dwinovo.numen.entity.Companions;import net.minecraft.core.BlockPos;
         public class RddPlugin {
             static Path ledgerDir,historyDir;static final Set<UUID> LEDGER_LOADED=new HashSet<>();
             static final Map<UUID,AssetHistory> HISTORY=new HashMap<>();
+            static final Map<UUID,RddRuntime> RUNTIMES=new HashMap<>();
             static final Map<UUID,Map<String,Integer>> LAST_INVENTORY=new HashMap<>();
             static final Map<UUID,Long> LAST_INVENTORY_AT=new HashMap<>();
             static NumenPlayer BODY;static boolean warning;static final Log LOG=new Log();
             static class Log{void warn(String s,Object... a){} void info(String s,Object... a){}}
             public static void configure(Path dir,UUID id){ledgerDir=dir.resolve("ledger");historyDir=dir.resolve("history");
-                LEDGER_LOADED.clear();HISTORY.clear();LAST_INVENTORY.clear();LAST_INVENTORY_AT.clear();warning=false;BODY=new NumenPlayer(id);}
+                LEDGER_LOADED.clear();HISTORY.clear();LAST_INVENTORY.clear();LAST_INVENTORY_AT.clear();warning=false;
+                Companions.SNAPSHOTS.clear();BODY=new NumenPlayer(id);}
             public static void sample(Map<String,Integer> live,Map<String,Integer> cached,boolean fail){
-                BODY.live=live;BODY.fail=fail;LAST_INVENTORY.put(BODY.id,cached);LAST_INVENTORY_AT.put(BODY.id,123L);}
-            public static Map<String,Integer> counts(){return deathInstantCounts(BODY);}
+                BODY.live=live;BODY.fail=fail;BODY.snapshot=java.util.Optional.empty();LAST_INVENTORY.put(BODY.id,cached);LAST_INVENTORY_AT.put(BODY.id,123L);}
+            public static void sampleSnapshot(Map<String,Integer> snapshot,boolean retainedOnly){
+                var value=new DeathInventorySnapshot(BODY.id,BODY.entityId,1L,snapshot);
+                if(retainedOnly) Companions.SNAPSHOTS.put(BODY.id,value); else BODY.snapshot=java.util.Optional.of(value);}
+            public static void wrongBody(){BODY.entityId++;}
+            public static DeathInstantCounts observation(){return deathInstantCounts(BODY);}
+            public static Map<String,Integer> counts(){return observation().counts();}
+            public static boolean known(){return observation().known();}
+            public static String source(){return observation().source();}
             public static void lostHistory(){recordDeathLostHistory(BODY.id,BODY);}
             public static boolean warned(){return warning;}
+            static void saveRuntimes(){}
+            static void publishTaskSnapshot(UUID id,String reason){}
             static void warnLedgerStore(String event,Map<String,?> data){warning=true;}
             static class NumenPlayer {
-                UUID id;Map<String,Integer> live=Map.of();boolean fail;
-                NumenPlayer(UUID id){this.id=id;}UUID getUUID(){return id;}
+                UUID id;int entityId=7;Map<String,Integer> live=Map.of();boolean fail;
+                java.util.Optional<DeathInventorySnapshot> snapshot=java.util.Optional.empty();
+                NumenPlayer(UUID id){this.id=id;}UUID getUUID(){return id;}int getId(){return entityId;}
+                java.util.Optional<DeathInventorySnapshot> deathInventorySnapshot(){return snapshot;}
                 String deathCauseId(){return "fall";}String deathCauseAttacker(){return "zombie";}String deathMessage(){return "fell";}
                 BlockPos blockPosition(){return new BlockPos(10,64,20);}Level serverLevel(){return new Level();}
                 Food getFoodData(){return new Food();}

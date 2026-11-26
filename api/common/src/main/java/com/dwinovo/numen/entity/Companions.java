@@ -16,7 +16,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Coordinates companion lifecycle on top of {@link CompanionFactory} (body
@@ -133,8 +135,52 @@ public final class Companions {
     private static final java.util.Set<UUID> PENDING_RESTORE =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    /**
+     * Same-server death-window facts. Kept through synchronous DEATH listeners, then removed on
+     * body REMOVE or the next SPAWN. The body id is part of every lookup so a respawn with the
+     * same companion UUID cannot consume a prior body's pre-death inventory.
+     */
+    private static final Map<UUID, DeathInventorySnapshot> DEATH_INVENTORY_SNAPSHOTS =
+            new ConcurrentHashMap<>();
+
+    static void rememberDeathInventory(DeathInventorySnapshot snapshot) {
+        if (snapshot == null) return;
+        DEATH_INVENTORY_SNAPSHOTS.compute(snapshot.companionId(), (uuid, current) -> {
+            if (current != null && current.bodyEntityId() == snapshot.bodyEntityId()
+                    && current.deathGeneration() == snapshot.deathGeneration()) {
+                return current;
+            }
+            return snapshot;
+        });
+    }
+
+    /** Read a retained death fact only when both the companion and concrete body match. */
+    public static Optional<DeathInventorySnapshot> deathInventorySnapshot(NumenPlayer body) {
+        if (body == null) return Optional.empty();
+        return deathInventorySnapshot(body.getUUID(), body.getId());
+    }
+
+    /** Missing means UNKNOWN; a present snapshot may be a known-empty capture. */
+    public static Optional<DeathInventorySnapshot> deathInventorySnapshot(UUID companionId, int bodyEntityId) {
+        if (companionId == null) return Optional.empty();
+        return Optional.ofNullable(DEATH_INVENTORY_SNAPSHOTS.get(companionId))
+                .filter(snapshot -> snapshot.bodyEntityId() == bodyEntityId);
+    }
+
+    private static void forgetDeathInventory(UUID companionId, int bodyEntityId) {
+        if (companionId == null) return;
+        DEATH_INVENTORY_SNAPSHOTS.computeIfPresent(companionId, (uuid, snapshot) ->
+                snapshot.bodyEntityId() == bodyEntityId ? null : snapshot);
+    }
+
     static {
-        com.dwinovo.numen.platform.ServerLifecycle.onStopped(PENDING_RESTORE::clear);
+        com.dwinovo.numen.platform.ServerLifecycle.onStopped(() -> {
+            PENDING_RESTORE.clear();
+            DEATH_INVENTORY_SNAPSHOTS.clear();
+        });
+        CompanionEvents.subscribe(CompanionEvent.SPAWN, body -> DEATH_INVENTORY_SNAPSHOTS.remove(body.getUUID()));
+        CompanionEvents.subscribe(CompanionEvent.REMOVE, body ->
+                forgetDeathInventory(body.getUUID(), body.getId()));
     }
 
     /**
@@ -563,6 +609,7 @@ public final class Companions {
             reg.remove(uuid);
             outbox.forget(uuid);   // 她攒的事件跟着走:没人会再收
             CompanionStateWatch.forget(uuid);   // 背包镜像同理:这个 UUID 不会再回来了
+            DEATH_INVENTORY_SNAPSHOTS.remove(uuid);
         }
         ServerPlayer owner = ownerUuid == null ? null : server.getPlayerList().getPlayer(ownerUuid);
         if (owner != null) {

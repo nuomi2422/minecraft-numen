@@ -139,12 +139,44 @@ final class RddStallWatcher {
         this.furnaceWatch = furnaceWatch;
     }
 
+    /** AI-assisted work still produces real progress facts, but never uses this watcher to nudge or fail it. */
+    void observeProgress(NumenPlayer ap, RddRuntime rt, Subtask current) {
+        if (!RddPlugin.supervisionEnabled()) {
+            RddRepeatQueryWatcher.clear(ap.getUUID());
+            return;
+        }
+        try {
+            var timers = com.dwinovo.numen.task.TimerRegistry.get(ap.getServer()).list(ap.getUUID());
+            if (timers != null && !timers.isEmpty()) {
+                stalls.remove(ap.getUUID());
+                RddRepeatQueryWatcher.clear(ap.getUUID());
+                return;
+            }
+        } catch (RuntimeException ignored) {
+            // Missing timer data does not hide observed world progress.
+        }
+        RddStallPolicy.Observation observation = observe(ap, rt, current);
+        if (observation.source().equals("furnace_production")) {
+            RddRepeatQueryWatcher.clear(ap.getUUID());
+        }
+        String fp = observation.fingerprint();
+        if (isInventoryTarget(current.condition())) fp = inventoryKey(ap, observation);
+        String stateKey = stateKey(ap, observation);
+        if (isInventoryTarget(current.condition())) stateKey = inventoryKey(ap, observation);
+        StallState st = stalls.get(ap.getUUID());
+        if (st == null || !st.subtaskId().equals(current.id()) || !st.windowFingerprint().equals(fp)) {
+            stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
+            RddRepeatQueryWatcher.clear(ap.getUUID());
+        }
+    }
+
     /**
      * 卡死检测：资产指纹连续 {@link #STALL_AFTER_TICKS} 次无变化
      * → markStalled + 拍醒（nudge）。返回 true 表示本次判定卡死，上层停止推进。
      */
     boolean track(NumenPlayer ap, RddRuntime rt, Subtask current) {
         if (!RddPlugin.supervisionEnabled()) {
+            RddRepeatQueryWatcher.clear(ap.getUUID());
             return false; // 空转止血：暂停监督不做卡死检测/拍醒/能力升级，资产推进照常
         }
         // 2026-10-25（夜里实测）：AI 用 set_timer 定了"100 秒后回来收熔炉"，这段时间
@@ -154,12 +186,17 @@ final class RddStallWatcher {
             var timers = com.dwinovo.numen.task.TimerRegistry.get(ap.getServer()).list(ap.getUUID());
             if (timers != null && !timers.isEmpty()) {
                 stalls.remove(ap.getUUID());
+                RddRepeatQueryWatcher.clear(ap.getUUID());
                 return false;
             }
         } catch (RuntimeException ignored) {
             // 定时器表读不到就按原逻辑走，不影响判定
         }
         RddStallPolicy.Observation observation = observe(ap, rt, current);
+        if (observation.source().equals("furnace_production")) {
+            // Legitimate production is not a repeat-query episode, even between output ticks.
+            RddRepeatQueryWatcher.clear(ap.getUUID());
+        }
         String fp = observation.fingerprint();
         // 库存窗口认背包和已观测生产进展，走路不算进展（保留 #196 的防绕圈边界）。
         //   原指纹含位置 ⇒ 她在地表绕圈就永远判不出卡住（实测该级 20 分钟无进展、规划者 76 分钟没被叫过）。
@@ -171,12 +208,14 @@ final class RddStallWatcher {
         StallState st = stalls.get(ap.getUUID());
         if (st == null || !st.subtaskId().equals(current.id())) {
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
+            RddRepeatQueryWatcher.clear(ap.getUUID());
             return false;
         }
         RddStallPolicy.Check check = RddStallPolicy.check(st.windowFingerprint(), st.unchangedTicks(), fp, observation.waiting());
         if (check.changed()) {
             // Assets, container output, cooking, or body work counters changed.
             stalls.put(ap.getUUID(), new StallState(current.id(), fp, stateKey, 0, 0));
+            RddRepeatQueryWatcher.clear(ap.getUUID());
             return false;
         }
         int unchanged = check.unchanged();
@@ -339,6 +378,7 @@ final class RddStallWatcher {
         String windowFp = isInventoryTarget(current.condition()) ? stateKey : observation.fingerprint();
         StallState st = stalls.get(ap.getUUID());
         if (!RddPlugin.supervisionEnabled()) {
+            RddRepeatQueryWatcher.clear(ap.getUUID());
             // 空转止血：暂停监督。AI 自己动了 → 回 RUNNING；否则保持卡住标记，绝不拍醒/绝不判失败。
             if (st != null && st.subtaskId().equals(current.id())
                     && st.stateFingerprint().equals(stateKey)) {
@@ -361,6 +401,7 @@ final class RddStallWatcher {
         if (!st.stateFingerprint().equals(stateKey)) {
             // Real production can recover a stalled task without moving items into inventory yet.
             rt.chain().resumeFromStalled(current.id());
+            RddRepeatQueryWatcher.clear(ap.getUUID());
             RddMonitor.publish("subtask_resumed", Map.of("subtask", current.id()));
             stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 0));
             return;
@@ -484,6 +525,7 @@ final class RddStallWatcher {
     void clear(UUID uuid) {
         stalls.remove(uuid);
         stallCounts.remove(uuid);
+        RddRepeatQueryWatcher.clear(uuid);
         // 2026-10-03：原来只清这两个，nudgedFingerprints 成了纯泄漏（换二级也不清）。
         nudgedStates.remove(uuid);
     }
@@ -491,6 +533,7 @@ final class RddStallWatcher {
     void clearAll() {
         stalls.clear();
         stallCounts.clear();
+        RddRepeatQueryWatcher.clearAll();
         nudgedStates.clear();
     }
 

@@ -37,7 +37,7 @@ class DeathRecoverySideTaskTypeTest {
                 1L, 0L, 1000L, 1000L + DeathRecoverySideTaskType.DEADLINE_TICKS,
                 SideTaskState.ACTIVE, DeathRecoverySideTaskType.PHASE_DECIDE,
                 Map.of("death_seq", "7", "dimension", "minecraft:the_nether",
-                        "death_at", "10,64,20"), null);
+                        "death_at", "10,64,20", "lost_items", "minecraft:iron_sword=1"), null);
     }
 
     @Test

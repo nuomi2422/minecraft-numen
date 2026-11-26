@@ -3,12 +3,15 @@ package com.dwinovo.numen.agent.llm;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,6 +33,7 @@ class LlmActivityTest {
     private static final String ID = "companion-under-test";
 
     @AfterEach void clearTable() {
+        LlmActivity.clearSettledListener();
         LlmActivity.reset();
     }
 
@@ -184,6 +188,40 @@ class LlmActivityTest {
         LlmActivity.markDispatched("a", "execution");
         assertTrue(LlmActivity.snapshot("a").inFlight());
         assertFalse(LlmActivity.snapshot("b").inFlight(), "b 没有在飞,不许被 a 连累");
+    }
+
+    // ---------- completed visible-response observer ----------
+
+    @Test void settledObserverReceivesOneVisibleResponsePerRealToken() {
+        List<String> seen = new ArrayList<>();
+        LlmActivity.installSettledListener((id, token, phase, finish, tools, text) ->
+                seen.add(id + "|" + token + "|" + phase + "|" + finish + "|" + tools + "|" + text));
+        long token = LlmActivity.markDispatched(ID, "execution");
+        LlmActivity.markSettled(ID, token, "stop", 0, "same visible answer");
+        LlmActivity.markSettled(ID, token, null, -1, null); // completion fallback is not another answer
+        assertEquals(1, seen.size());
+        assertTrue(seen.get(0).endsWith("|execution|stop|0|same visible answer"));
+    }
+
+    @Test void wrongForgottenAndToolCallingTokensDoNotEmitVisibleRepeats() {
+        List<Integer> counts = new ArrayList<>();
+        LlmActivity.installSettledListener((id, token, phase, finish, tools, text) -> counts.add(tools));
+        long old = LlmActivity.markDispatched(ID, "execution");
+        LlmActivity.markSettled(ID, old + 99, "stop", 0, "wrong token");
+        LlmActivity.forget(ID);
+        LlmActivity.markSettled(ID, old, "stop", 0, "late");
+        long current = LlmActivity.markDispatched(ID, "execution");
+        LlmActivity.markSettled(ID, current, "tool_calls", 1, "calling a tool");
+        assertEquals(List.of(1), counts, "wrong/forgotten tokens are silent; the real tool-call response is still observed");
+    }
+
+    @Test void observerFailureCannotBreakSettlement() {
+        LlmActivity.installSettledListener((id, token, phase, finish, tools, text) -> {
+            throw new IllegalStateException("observer failed");
+        });
+        long token = LlmActivity.markDispatched(ID, "execution");
+        assertDoesNotThrow(() -> LlmActivity.markSettled(ID, token, "stop", 0, "visible"));
+        assertFalse(LlmActivity.snapshot(ID).inFlight());
     }
 
     // ---------- 真并发 ----------
