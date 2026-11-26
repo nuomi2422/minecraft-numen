@@ -87,6 +87,10 @@ final class RddPlanGuard {
         if (!declaredPurposes && acquireIntent && existenceOnly) {
             gaps.add("取得物品（判据只证附近方块或容器存在，未证实际入包）");
         }
+        boolean craftIntent = d.contains("合成") || d.contains("制作") || d.contains("打造");
+        if (!declaredPurposes && craftIntent && "item_picked_up".equals(String.valueOf(c.get("type")))) {
+            gaps.add("合成物品（item_picked_up只证拾取，不证合成结果）");
+        }
         // 2026-11-24（live 747056 首次 Stage-B）：世界侦察句也常以「清点村里…」开头，
         // 旧实现把「清点」一律当背包意图，整批必需 MAIN 被拒。背包/身上/随身/手上仍是强意图；
         // 「清点」只看直接宾语是不是背包容器词；resource_uses 既有豁免机制不动（滥用另记边界）。

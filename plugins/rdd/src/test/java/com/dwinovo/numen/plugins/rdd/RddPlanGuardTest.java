@@ -210,6 +210,17 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 合成石镐不能用品拾取判据完成() {
+        SubtaskSpec s = new SubtaskSpec("用圆石3和木棍2合成石镐",
+                Map.of("type", "item_picked_up", "item", "#minecraft:pickaxes", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("不证合成结果")),
+                RddPlanGuard.predicateGaps(s).toString());
+        SubtaskSpec held = new SubtaskSpec("用圆石3和木棍2合成石镐",
+                Map.of("asset_key", "minecraft:stone_pickaxe", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(held).isEmpty(), RddPlanGuard.predicateGaps(held).toString());
+    }
+
+    @Test
     void 背包持有判断配背包条件不误报世界错配() {
         SubtaskSpec s = new SubtaskSpec("清点背包里的干草块，确认留存数量",
                 Map.of("asset_key", "minecraft:hay_block", "minimum", 1), null,
