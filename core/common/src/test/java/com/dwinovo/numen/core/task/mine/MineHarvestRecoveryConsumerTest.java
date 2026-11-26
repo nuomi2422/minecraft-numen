@@ -290,6 +290,7 @@ class MineHarvestRecoveryConsumerTest {
                 "    private TaskState retryFailedNavigation() {", "    private TaskState waterRecoveryTick() {",
                 "    private void invalidateNavigationFailure() {",
                 "    private String navigationFailureSuffix() {", "    private void noteProgress() {",
+                "    private void noteProgress(String stage) {",
                 "    private TaskState stalledOut() {", "    private void mineProgress(BlockPos pos) {",
                 "    private void clearNoShot() {", "    protected Map<String, Object> resultData() {",
                 "    protected String successMessage() {")) {
@@ -362,11 +363,13 @@ class MineHarvestRecoveryConsumerTest {
                         int count=5,mined; String label="stone+4"; long deadline=3000;
                         Set<Object> targets=Set.of("ore"); boolean containsTarget(BlockPos p){return true;}
                         int getMined(){return mined;} void setMined(int n){mined=n;}
+                        void reportProgress(long time,String stage,java.util.Map<String,Object> data){}
                         long getDeadlineGameTime(){return deadline;} void extendDeadlineTo(long n){deadline=n;}
                     }
                     static class Digger {
                         enum Result { BROKE_TARGET, BROKE_OCCLUDER, NO_SHOT, PROGRESSING }
                         Result next=Result.BROKE_TARGET; boolean cancelled; BlockPos locked; BlockPos current(){return locked;}
+                        long progressVersion(){return 0;}
                         Result digStep(BlockPos p){return next;} void cancel(){cancelled=true;}
                     }
                     final Request r=new Request(); final Digger digger=new Digger();
@@ -374,7 +377,7 @@ class MineHarvestRecoveryConsumerTest {
                     final Set<BlockPos> unworkable=new HashSet<>(); final Map<BlockPos,Long> anticipatedDrops=new HashMap<>();
                     List<BlockPos> drops=List.of(), observedDrops=List.of(); PlayerNav nav;
                     boolean lastQueryComplete=true,navIsBranch; int coldMapFails,queryCooldown,navReplanCooldown;
-                    int baseline,brokenTargets,branchTicks,branchY,noShotTicks,pickup; long lastProgressTick;
+                    int baseline,brokenTargets,branchTicks,branchY,noShotTicks,pickup; long lastProgressTick,lastDigProgressVersion=Long.MIN_VALUE;
                     BlockPos lastProgressPos=player.feet,branchPoint,noShotPos,reachable,latchedMineTarget;
                     String progressNote="done"; Precondition.Failure terminal;
                     static final int STALL_TICKS=400,NAV_REPLAN_MIN_GAP_TICKS=20,MAX_NO_SHOT_TICKS=20,MAX_BRANCH_TICKS=600,DROP_LOITER_TICKS=5;

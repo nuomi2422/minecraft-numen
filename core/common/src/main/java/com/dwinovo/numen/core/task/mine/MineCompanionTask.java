@@ -185,6 +185,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
     /** 上一次真有进展(挖掉一格)或明显挪窝的时刻与位置 —— 卡死判定的量尺。 */
     private long lastProgressTick;
     private BlockPos lastProgressPos;
+    private long lastDigProgressVersion = Long.MIN_VALUE;
 
     /** 地图不完整时连续无路的次数（见 {@link NoPathVerdict}）。 */
     private int coldMapFails;
@@ -294,6 +295,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         runQuery();
         lastProgressTick = player.level().getGameTime();
         lastProgressPos = player.blockPosition();
+        noteProgress("scan");
         // 与 goto 的 start 日志对称:一任务一条,让日志里能看到任务确实启动了
         com.dwinovo.numen.core.Constants.LOG.info(
                 "[numen-task] mine start targets={} count={} feet={} firstQuery={} hit(s) mapComplete={}",
@@ -322,7 +324,7 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
         if (WaterRecovery.requested(player.getUUID())) {
             digger.cancel();
             latchedMineTarget = null;
-            noteProgress();
+            noteProgress("water_recovery");
             return waterRecoveryTick();
         }
 
@@ -773,8 +775,14 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             case BROKE_OCCLUDER -> {
                 navigationFailure = null;
                 clearNoShot();
+                noteProgress();
             }
             default -> clearNoShot();
+        }
+        long digVersion = digger.progressVersion();
+        if (digVersion != lastDigProgressVersion) {
+            lastDigProgressVersion = digVersion;
+            noteProgress("dig");
         }
     }
 
@@ -950,9 +958,17 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
 
     /** 挖掉了一格,或者明显挪了窝 —— 两者都算进展,卡死计时重新起算。 */
     private void noteProgress() {
+        noteProgress("mine");
+    }
+
+    private void noteProgress(String stage) {
         navigationFailure = null;
         lastProgressTick = player.level().getGameTime();
         lastProgressPos = player.blockPosition();
+        r.reportProgress(lastProgressTick, stage, Map.of(
+                "position", lastProgressPos.toShortString(),
+                "mined", r.getMined(),
+                "broken_targets", brokenTargets));
     }
 
     /**

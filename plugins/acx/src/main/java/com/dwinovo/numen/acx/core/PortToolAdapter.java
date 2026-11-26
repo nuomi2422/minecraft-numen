@@ -46,6 +46,7 @@ public final class PortToolAdapter implements AcxTool {
     private final Map<String, AcxToolPort.Result> pushedByTask = new ConcurrentHashMap<>();
     /** 每个挂账键首次 UNKNOWN 的时刻；只用于「不能判断」的宽限计时。 */
     private final Map<CallKey, Long> unknownSince = new ConcurrentHashMap<>();
+    private final Map<CallKey, AcxNoStageProgress> progressByStep = new ConcurrentHashMap<>();
 
     private record CallKey(String runId, String fingerprint, String acName, String path) { }
 
@@ -82,7 +83,7 @@ public final class PortToolAdapter implements AcxTool {
                     && key.fingerprint().equals(scope.fingerprint())
                     && key.acName().equals(scope.acName())
                     && key.path().startsWith(scope.path()) && entry.getValue().terminal() != null;
-            if (consumed) unknownSince.remove(key);
+            if (consumed) clearObservation(key);
             return consumed;
         });
     }
@@ -92,7 +93,7 @@ public final class PortToolAdapter implements AcxTool {
         pendingByStep.entrySet().removeIf(entry -> {
             CallKey key = entry.getKey();
             if (!key.runId().equals(runId)) return false;
-            unknownSince.remove(key);
+            clearObservation(key);
             pushedByTask.remove(entry.getValue().taskId());
             return true;
         });
@@ -185,7 +186,7 @@ public final class PortToolAdapter implements AcxTool {
         if (acc != null && !acc.paramsSignature().equals(signature)) {
             // 同一 AC 同一步骤（同一迭代）换了参数 = 换目标：旧任务的账不能算在新目标头上。
             pendingByStep.remove(key);
-            unknownSince.remove(key);
+            clearObservation(key);
             acc = null;
         }
         if (acc != null) {
@@ -225,7 +226,8 @@ public final class PortToolAdapter implements AcxTool {
             case ACCEPTED: {
                 Acceptance fresh = new Acceptance(r.taskId(), r.standing(), signature, r.data(), null, null, r.bodyAction());
                 pendingByStep.put(key, fresh);
-                unknownSince.remove(key);
+                clearObservation(key);
+                progressByStep.put(key, new AcxNoStageProgress(clock.getAsLong(), progressFacts(r.data())));
                 return AcxStepOutcome.paused(acceptMessage(r), acceptedOutput(fresh, r.standing()));
             }
             default:
@@ -251,6 +253,7 @@ public final class PortToolAdapter implements AcxTool {
             if (reply.outcome() == AcxToolPort.Outcome.BODY_BUSY
                     || (reply.isFailed() && !retainFailure) || (reply.isCompleted() && !defer)) {
                 pendingByStep.remove(key, acc);
+                clearObservation(key);
             }
             AcxStepOutcome outcome = applyDispatchResult(key, acc.paramsSignature(), reply, defer);
             if (retainFailure) pendingByStep.replace(key, acc, acc.withTerminal(outcome));
@@ -259,6 +262,7 @@ public final class PortToolAdapter implements AcxTool {
         if (acc.terminal() != null) {
             if (!defer && acc.terminal().status() != AcxStatus.PAUSED) {
                 pendingByStep.remove(key, acc);
+                clearObservation(key);
             }
             return acc.terminal();
         }
@@ -274,31 +278,26 @@ public final class PortToolAdapter implements AcxTool {
                     acceptedOutput(acc, true));
         }
         if (probe == null) {
-            return AcxStepOutcome.paused(name() + " 异步任务仍在进行（无 completion probe，等待宿主完成通知）",
-                    acceptedOutput(acc, false));
+            return supervisedPause(key, acc, acceptedOutput(acc, false), Map.of());
         }
         // AC-B12b 复审（2026-10-21）：没有 task_id 就**不许问探针** —— 探针只能按 id 精确回答，
         // 空 id 会让它跳过 id 校验，把「别的任务的 SUCCESS」当成本任务完成（假成功）。
         // 这里保持挂账、等宿主终态推送或 deadline，与 :126/:175 的空 id 守卫保持一致。
         if (acc.taskId().isEmpty()) {
-            return AcxStepOutcome.paused(name() + " 受理回执没有 task_id，无法确认完成（保留挂账，等宿主终态或 deadline）",
-                    acceptedOutput(acc, false));
+            return supervisedPause(key, acc, acceptedOutput(acc, false), Map.of());
         }
         AcxCompletionProbe.Snapshot s;
         try {
             s = probe.probe(acc.taskId(), ctx);
         } catch (Throwable t) {
-            return AcxStepOutcome.paused(name() + " 完成探针异常（保留挂账，等待重试）",
-                    acceptedOutput(acc, false));
+            return supervisedPause(key, acc, acceptedOutput(acc, false), Map.of());
         }
         if (s == null) {
-            return AcxStepOutcome.paused(name() + " 完成探针返回 null（保留挂账）",
-                    acceptedOutput(acc, false));
+            return supervisedPause(key, acc, acceptedOutput(acc, false), Map.of());
         }
         switch (s.state()) {
             case RUNNING:
-                return AcxStepOutcome.paused(name() + " 异步任务进行中: " + s.message(),
-                        acceptedOutput(acc, false));
+                return supervisedPause(key, acc, acceptedOutput(acc, false), progressFacts(s.data()));
             case DONE:
                 return settled(key, acc, AcxToolPort.Result.completed(s.data(), s.message()), defer, ctx);
             case FAILED:
@@ -316,7 +315,7 @@ public final class PortToolAdapter implements AcxTool {
                                 unknownPauseOutput(acc));
                     }
                     pendingByStep.remove(key);
-                    unknownSince.remove(key);
+                    clearObservation(key);
                     return AcxStepOutcome.failed(name() + " 完成探针连续 " + (now - first)
                             + "ms 无法判定（按失败处理，避免永久挂起）");
                 }
@@ -357,14 +356,14 @@ public final class PortToolAdapter implements AcxTool {
             case UNKNOWN, ACTIVE -> {
                 details.put("_pause_reason", found.state() == AcxBodyAction.State.UNKNOWN
                         ? "body_terminal_unknown" : "body_active");
-                yield AcxStepOutcome.paused("等待原身体任务终态；进展、路径按原证据回报", details);
+                yield supervisedPause(key, acc, details, progressFacts(found.output()));
             }
         };
     }
 
     private AcxStepOutcome settled(CallKey key, Acceptance acc, AcxToolPort.Result result,
                                    boolean defer, AcxCallContext ctx) {
-        unknownSince.remove(key);
+        clearObservation(key);
         AcxStepOutcome outcome = settle(acc, result);
         if (defer && (outcome.isSuccess() || ctx.defersIgnoredFailureReceiptConsumption())) {
             pendingByStep.replace(key, acc, acc.withTerminal(outcome));
@@ -388,8 +387,39 @@ public final class PortToolAdapter implements AcxTool {
         return AcxStepOutcome.success(out, r.message());
     }
 
+    private AcxStepOutcome supervisedPause(CallKey key, Acceptance acc,
+                                           Map<String, Object> output, Map<String, Object> facts) {
+        long now = clock.getAsLong();
+        AcxNoStageProgress state = progressByStep.computeIfAbsent(key,
+                ignored -> new AcxNoStageProgress(now, progressFacts(acc.data())));
+        AcxNoStageProgress.Result result = state.observe(facts, now);
+        Map<String, Object> out = new LinkedHashMap<>(output);
+        if (!facts.isEmpty()) out.put(AcxBodyAction.PROGRESS_FACTS, facts);
+        out.put("supervision", result.details());
+        if (result.expired()) {
+            out.put("_pause_reason", "acx_no_stage_progress");
+            return AcxStepOutcome.paused(name() + " 长时间没有可核验的阶段进展；保留原受理回执，等待重新观察", out);
+        }
+        return AcxStepOutcome.paused(name() + " 异步任务仍在进行，阶段进展受有界监督", out);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> progressFacts(Map<String, Object> data) {
+        if (data != null && data.get(AcxBodyAction.PROGRESS_FACTS) instanceof Map<?, ?> facts) {
+            return (Map<String, Object>) facts;
+        }
+        return Map.of();
+    }
+
+    private void clearObservation(CallKey key) {
+        unknownSince.remove(key);
+        progressByStep.remove(key);
+    }
+
     private Map<String, Object> acceptedOutput(Acceptance acc, boolean standing) {
         Map<String, Object> out = new LinkedHashMap<>(acc.data());
+        Map<String, Object> facts = progressFacts(acc.data());
+        if (!facts.isEmpty()) out.put(AcxBodyAction.PROGRESS_FACTS, facts);
         out.put("_accepted", true);
         out.put("_completed", false);
         if (acc.bodyAction() != null) out.put("body_action", AcxBodyAction.Snapshot.unknown().output());

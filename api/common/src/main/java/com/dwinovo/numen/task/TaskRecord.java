@@ -1,6 +1,9 @@
 package com.dwinovo.numen.task;
 import com.dwinovo.numen.task.TaskResult;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import com.dwinovo.numen.api.WorldContextStamp;
 
@@ -76,6 +79,10 @@ public abstract class TaskRecord {
     public final void markCallerOwned() { callerOwned = true; }
     /** 首次进入 RUNNING 的游戏刻;task_status 用它报已耗时。-1 = 还没开跑。 */
     private long startedGameTime = -1;
+    private long progressSequence;
+    private long lastProgressGameTime = -1;
+    private String progressStage = "";
+    private Map<String, Object> progressData = Map.of();
 
     protected TaskRecord(String toolName, String toolCallId, long deadlineGameTime) {
         this.id = ID_SOURCE.incrementAndGet();
@@ -168,6 +175,30 @@ public abstract class TaskRecord {
         if (startedGameTime < 0) startedGameTime = gameTime;
     }
     public final long getStartedGameTime() { return startedGameTime; }
+
+    /** Tick-thread only: record a producer-observed stage change or effective world progress. */
+    public final void reportProgress(long gameTime, String stage, Map<String, Object> data) {
+        if (gameTime < 0 || stage == null || stage.isBlank()) {
+            throw new IllegalArgumentException("Progress requires a game tick and stage");
+        }
+        progressSequence++;
+        lastProgressGameTime = gameTime;
+        progressStage = stage;
+        progressData = data == null || data.isEmpty()
+                ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(data));
+    }
+
+    /** Empty until the task itself reports progress; elapsed time is never progress. */
+    public final Map<String, Object> progressFacts(long now) {
+        if (lastProgressGameTime < 0) return Map.of();
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("stage", progressStage);
+        facts.put("progress_seq", progressSequence);
+        facts.put("last_progress_game_time", lastProgressGameTime);
+        facts.put("observed_game_time", now);
+        facts.put("data", progressData);
+        return Collections.unmodifiableMap(facts);
+    }
 
     /**
      * 受理它的那一刻还没过去。

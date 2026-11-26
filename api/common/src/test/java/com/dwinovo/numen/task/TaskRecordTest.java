@@ -85,6 +85,27 @@ class TaskRecordTest {
         org.junit.jupiter.api.Assertions.assertEquals(2000L, bounded.getDeadlineGameTime());
     }
 
+    @Test void progressFactsAreProducerDeclaredAndObservationTimeDoesNotAdvanceThem() {
+        Fake task = new Fake(1000);
+        assertTrue(task.progressFacts(0).isEmpty());
+        var data = new java.util.LinkedHashMap<String, Object>();
+        data.put("position", "1,2,3");
+        task.reportProgress(10, "dig", data);
+        data.put("position", "mutated");
+        var first = task.progressFacts(11);
+        org.junit.jupiter.api.Assertions.assertEquals("dig", first.get("stage"));
+        org.junit.jupiter.api.Assertions.assertEquals(1L, first.get("progress_seq"));
+        org.junit.jupiter.api.Assertions.assertEquals(10L, first.get("last_progress_game_time"));
+        org.junit.jupiter.api.Assertions.assertEquals(11L, first.get("observed_game_time"));
+        org.junit.jupiter.api.Assertions.assertEquals("1,2,3", ((java.util.Map<?, ?>) first.get("data")).get("position"));
+        var later = task.progressFacts(999);
+        org.junit.jupiter.api.Assertions.assertEquals(first.get("progress_seq"), later.get("progress_seq"));
+        task.reportProgress(12, "dig", java.util.Map.of("position", "2,2,3"));
+        org.junit.jupiter.api.Assertions.assertEquals(2L, task.progressFacts(12).get("progress_seq"));
+        org.junit.jupiter.api.Assertions.assertThrows(UnsupportedOperationException.class,
+                () -> first.put("stage", "heartbeat"));
+    }
+
     private static com.dwinovo.numen.api.WorldContextStamp.Token selectionToken(java.util.Map<String, String> identity) {
         return new com.dwinovo.numen.api.WorldContextStamp.Token(identity, 7);
     }

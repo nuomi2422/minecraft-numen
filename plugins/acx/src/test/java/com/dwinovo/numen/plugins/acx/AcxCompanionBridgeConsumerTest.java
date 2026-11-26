@@ -141,6 +141,11 @@ class AcxCompanionBridgeConsumerTest {
                 call("cancelledRunLateReceiptKeepsBodyBusy"));
     }
 
+    @Test void runningBodyProgressFactsComeOnlyFromOriginalTaskProducer() throws Exception {
+        assertEquals(List.of("ACTIVE", "VERIFIED", "dig", 1L, "ACTIVE", "VERIFIED", "dig", 2L),
+                call("runningBodyProgressFacts"));
+    }
+
     @Test void sameBodyCanObserveWhilePreviousRunWaitsForDrops() throws Exception {
         assertEquals(List.of(true, true, true, 1, true, true, true),
                 call("observeWhileMineWaits"));
@@ -355,6 +360,9 @@ class AcxCompanionBridgeConsumerTest {
                 private TaskResult result;
                 private WorldContextStamp.Token identity;
                 private long accepted = -1;
+                private long progressSeq, lastProgress = -1;
+                private String progressStage = "";
+                private java.util.Map<String,Object> progressData = java.util.Map.of();
                 private boolean callerOwned;
                 public TaskRecord(String id, String state) { this(id,state,null); }
                 public TaskRecord(String id, String state, TaskResult result) {
@@ -376,6 +384,17 @@ class AcxCompanionBridgeConsumerTest {
                 public long getDeadlineGameTime() { return deadline; }
                 public void extendDeadlineTo(long time) {}
                 public void markStarted(long time) { accepted = time; }
+                public void reportProgress(long time, String stage, java.util.Map<String,Object> data) {
+                    progressSeq++; lastProgress = time; progressStage = stage;
+                    progressData = data == null ? java.util.Map.of() : data;
+                }
+                public java.util.Map<String,Object> progressFacts(long now) {
+                    if (lastProgress < 0) return java.util.Map.of();
+                    var facts = new java.util.LinkedHashMap<String,Object>();
+                    facts.put("stage", progressStage); facts.put("progress_seq", progressSeq);
+                    facts.put("last_progress_game_time", lastProgress); facts.put("observed_game_time", now);
+                    facts.put("data", progressData); return facts;
+                }
                 public boolean acceptedWithin(long time, long grace) { return accepted >= 0 && time <= accepted + grace; }
                 public void bindIdentity(WorldContextStamp.Token token) { if (identity == null) identity = token; }
                 public WorldContextStamp.Token identityToken() { return identity; }
@@ -1142,6 +1161,35 @@ class AcxCompanionBridgeConsumerTest {
                     WorldContextStamp.epoch = 0;
                 }
             }
+            public static List<Object> runningBodyProgressFacts() {
+                var f = new MineReceiptFixture(false);
+                try {
+                    WorldContextStamp.epoch = 1;
+                    f.start(); f.drain();
+                    f.mine.reportProgress(10, "dig", Map.of("broken_targets", 1));
+                    resumeAndDrain(f);
+                    var first = latestBodyPause(f);
+                    f.a.gameTime = 11;
+                    f.mine.reportProgress(11, "dig", Map.of("broken_targets", 2));
+                    resumeAndDrain(f);
+                    var second = latestBodyPause(f);
+                    return List.of(first.get("state"), first.get("progress"),
+                            ((Map<?,?>)first.get("progress_facts")).get("stage"),
+                            ((Map<?,?>)first.get("progress_facts")).get("progress_seq"),
+                            second.get("state"), second.get("progress"),
+                            ((Map<?,?>)second.get("progress_facts")).get("stage"),
+                            ((Map<?,?>)second.get("progress_facts")).get("progress_seq"));
+                } finally {
+                    f.close();
+                }
+            }
+
+            private static Map<?,?> latestBodyPause(MineReceiptFixture f) {
+                var pause = f.events.stream().filter(e -> e.kind() == AcxEvent.Kind.STEP_PAUSED)
+                        .reduce((a,b) -> b).orElseThrow();
+                return (Map<?,?>)pause.detail().get("body_action");
+            }
+
             public static List<Object> immediateMineBodyReply() { return mineBodyReply(false); }
             public static List<Object> lateMineBodyReply() { return mineBodyReply(true); }
             private static List<Object> mineBodyReply(boolean late) {

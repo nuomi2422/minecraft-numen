@@ -35,7 +35,8 @@ class MineEffectsConsumerTest {
                 "    protected TaskState onTick() {", "    private void mineProgress(BlockPos pos) {",
                 "    private void clearNoShot() {", "    private int inventoryMatch() {",
                 "    private List<BlockPos> droppedItems() {", "    private boolean nearKnownOre(BlockPos p) {",
-                "    private void noteProgress() {", "    private TaskState stalledOut() {",
+                "    private void noteProgress() {", "    private void noteProgress(String stage) {",
+                "    private TaskState stalledOut() {",
                 "    protected Map<String, Object> resultData() {")) {
             methods += MineHarvestRecoveryConsumerTest.method(source, signature) + "\n";
         }
@@ -102,6 +103,14 @@ class MineEffectsConsumerTest {
         var r=run("digging"); assertEquals("RUNNING",r.get("state")); assertEquals(1,r.get("digCalls"));
         assertEquals(0,r.get("gathered"));
     }
+    @Test void activeDigDeclaresProducerProgressWithoutInventingGatheredItems() throws Exception {
+        var r=run("digging");
+        assertEquals("RUNNING",r.get("state"));
+        assertEquals(1,r.get("digCalls"));
+        assertEquals(0,r.get("gathered"));
+        assertEquals(List.of("dig"),r.get("progressStages"));
+    }
+
     @Test void requestedMatchingInventoryDeltaCompletesWithoutAnotherDig() throws Exception {
         var r=run("complete"); assertEquals("SUCCESS",r.get("state")); assertEquals(4,r.get("gathered"));
         assertEquals(false,r.get("partial")); assertEquals(0,r.get("shortfall")); assertEquals(0,r.get("digCalls"));
@@ -137,9 +146,12 @@ class MineEffectsConsumerTest {
                     ServerLevel getServer(){return this;} ServerLevel getPlayerList(){return this;} int getViewDistance(){return 3;}
                 }
                 static class Player {
+                    java.util.UUID id=java.util.UUID.randomUUID();
                     Level world=new Level(); Inventory inv=new Inventory(); BlockPos feet=new BlockPos(0,64,0); boolean loot=true;
                     Level level(){return world;} Inventory getInventory(){return inv;} BlockPos blockPosition(){return feet;}
+                    java.util.UUID getUUID(){return id;}
                 }
+                static class WaterRecovery { static boolean requested(java.util.UUID id){return false;} }
                 record WorkProfile(boolean dropsLoot) { static WorkProfile of(Player p){return new WorkProfile(p.loot);} }
                 static class NavProfiler { static long begin(){return 0;} static void end(String s,long t){} }
                 static class PlayerNav {
@@ -156,13 +168,16 @@ class MineEffectsConsumerTest {
                 static class Digger {
                     enum Result { BROKE_TARGET, NO_SHOT, BROKE_OCCLUDER, PROGRESSING }
                     BlockPos current; Result result=Result.PROGRESSING; int calls;
+                    long progressVersion(){return 0;}
                     BlockPos current(){return current;} void cancel(){current=null;}
                     Result digStep(BlockPos p){calls++;return result;}
                 }
                 static class Record {
                     int count=4,mined; String label="iron_ore"; long deadline;
+                    java.util.List<String> progressStages=new java.util.ArrayList<>();
                     Set<Object> targets=Set.of("ore"); boolean containsTarget(BlockPos p){return true;}
                     int getMined(){return mined;} void setMined(int n){mined=n;}
+                    void reportProgress(long time,String stage,java.util.Map<String,Object> data){progressStages.add(stage);}
                     long getDeadlineGameTime(){return deadline;} void extendDeadlineTo(long n){deadline=n;}
                 }
                 static final int STALL_TICKS=400, DROP_LOITER_TICKS=5, MAX_NO_SHOT_TICKS=20, MAX_BRANCH_TICKS=600;
@@ -172,7 +187,8 @@ class MineEffectsConsumerTest {
                 Set<Item> dropItems=Set.of(new Item("raw_iron")); Map<BlockPos,Long> anticipatedDrops=new HashMap<>();
                 int baseline=10,brokenTargets,branchTicks,branchY,navReplanCooldown,noShotTicks;
                 boolean navIsBranch,lastQueryComplete=true; BlockPos branchPoint,noShotPos,lastProgressPos=new BlockPos(0,64,0),reachable;
-                BlockPos latchedMineTarget; long lastProgressTick; Object navigationFailure; String progressNote="done",failure="";
+                BlockPos latchedMineTarget; long lastProgressTick,lastDigProgressVersion=Long.MIN_VALUE; Object navigationFailure; String progressNote="done",failure="";
+                TaskState waterRecoveryTick(){return TaskState.RUNNING;}
                 void prune(){} void maybeQuery(){} void invalidateNavigationFailure(){}
                 boolean reachable(BlockPos p){return true;} BlockPos reachableTarget(){return reachable;}
                 void stopNav(){nav=null;navIsBranch=false;} Object oreFieldCompiled(){return new Object();}
@@ -213,7 +229,8 @@ class MineEffectsConsumerTest {
                     Map<String,Object> result=f.resultData(); result.put("state",state.name());
                     result.put("progressTick",f.lastProgressTick);result.put("broken",f.brokenTargets);
                     result.put("dropGoals",f.drops.size());result.put("anticipated",f.anticipatedDrops.size());
-                    result.put("digCalls",f.digger.calls);result.put("failure",f.failure);return result;
+                    result.put("digCalls",f.digger.calls);result.put("failure",f.failure);
+                    result.put("progressStages",f.r.progressStages);return result;
                 }
             }
             """;

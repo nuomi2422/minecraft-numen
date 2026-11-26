@@ -56,6 +56,7 @@ public final class BlockDigger {
     private final NumenPlayer player;
     private BlockPos pos;
     private float progress;       // accumulated 0..1 destroy fraction
+    private long progressVersion;
     private boolean started;      // START_DESTROY_BLOCK has been sent for `pos`
     private int blockHitDelay;    // post-break cooldown (survives reset())
     /** 开挖时的主手物品快照;中途换持(物品/组件级)即重开进度。 */
@@ -68,6 +69,10 @@ public final class BlockDigger {
     /** The block currently being dug, or {@code null} when idle. */
     public BlockPos current() {
         return pos;
+    }
+
+    public long progressVersion() {
+        return progressVersion;
     }
 
     /** Outcome of one {@link #digStep} tick — lets callers distinguish "still working"
@@ -220,6 +225,7 @@ public final class BlockDigger {
 
         // Survival: accumulate the real per-tick destroy fraction; broadcast the crack.
         progress += state.getDestroyProgress(player, level, pos);
+        progressVersion++;
         int stage = Math.min(9, (int) (progress * 10.0f));
         level.destroyBlockProgress(CRACK_ID, pos, stage);
         player.swing(InteractionHand.MAIN_HAND);

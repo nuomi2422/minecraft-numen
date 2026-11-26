@@ -65,6 +65,8 @@ public final class PathExecutor {
     private int ticksOnCurrent;
     /** 距上次真实推进(移动完成/重定位/活跃挖掘)的 tick 数,liveness 信号。 */
     private int ticksSinceProgress;
+    private long progressVersion;
+    private Movement currentMovement;
     /** 身位连续不在路径任何合法位上的刻数;超限即取消重算。 */
     private int ticksNotInValid;
     private static final int MAX_TICKS_NOT_IN_VALID = 20;
@@ -162,6 +164,7 @@ public final class PathExecutor {
             return true;
         }
         Movement movement = path.movements().get(pathPosition);
+        currentMovement = movement;
         movement.setExecutionDelegate(harness);
         BlockPos feet = playerFeet(player);
         boolean inValid = movement.getValidPositions().contains(feet);
@@ -368,6 +371,7 @@ public final class PathExecutor {
             // 活跃挖掘算真实推进(硬方块一挖几十 tick 是正常工作)
             if (harness.isDigging()) {
                 ticksSinceProgress = 0;
+                progressVersion++;
             } else {
                 ticksSinceProgress++;
             }
@@ -603,6 +607,15 @@ public final class PathExecutor {
         harness.clearAllKeys();
         ticksOnCurrent = 0;
         ticksSinceProgress = 0;
+        progressVersion++;
+    }
+
+    public long progressVersion() {
+        return progressVersion;
+    }
+
+    public String progressStage() {
+        return currentMovement == null ? "idle" : "execute:" + currentMovement.getClass().getSimpleName();
     }
 
     /** 方块的短名(排障日志用)。 */

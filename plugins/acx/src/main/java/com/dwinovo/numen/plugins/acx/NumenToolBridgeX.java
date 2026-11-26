@@ -22,6 +22,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -335,7 +336,7 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 if (!session.ownsTask(taskId)) {
                     return Snapshot.unknown("该任务号没有此运行的受理回执");
                 }
-                return probeFor(() -> original).probe(taskId);
+                return probeBound(plugin, session, original, taskId);
             }
 
             @Override
@@ -374,7 +375,16 @@ public final class NumenToolBridgeX implements AcxToolPort {
                                 if (wanted.equals(ref)) {
                                     // 2026-11-19: only the same RUNNING current task may contribute its
                                     // fresh sample; absent/stale keeps the old UNKNOWN body_action.
-                                    answer.set(AcxBodyAction.fromTask(wanted, ref, null));
+                                    Map<String, Object> facts = active.progressFacts(original.level().getGameTime());
+                                    if (facts.isEmpty()) {
+                                        answer.set(AcxBodyAction.fromTask(wanted, ref, null));
+                                    } else {
+                                        Map<String, Object> declared = new LinkedHashMap<>(facts);
+                                        declared.put("wait_reason", "body_active");
+                                        answer.set(new AcxBodyAction.Snapshot(ref, AcxBodyAction.State.ACTIVE,
+                                                AcxBodyAction.Progress.VERIFIED, AcxBodyAction.Route.UNKNOWN,
+                                                Map.of(AcxBodyAction.PROGRESS_FACTS, declared)));
+                                    }
                                 }
                             }
                         }
@@ -389,6 +399,55 @@ public final class NumenToolBridgeX implements AcxToolPort {
                 }
             }
         };
+    }
+
+    private static AcxCompletionProbe.Snapshot probeBound(AcxPlugin plugin,
+            AcxSessionManager.Session session, NumenPlayer original, String taskId) {
+        AtomicReference<AcxCompletionProbe.Snapshot> answer = new AtomicReference<>();
+        try {
+            plugin.gate().call(() -> {
+                var server = original.getServer();
+                if (session.bodyToken() != original || !session.ownsTask(taskId)
+                        || server == null || !server.isSameThread() || original.isRemoved() || !original.isAlive()
+                        || NumenPlayer.findByUuid(server, original.getUUID()) != original) {
+                    answer.set(AcxCompletionProbe.Snapshot.unknown("原始同伴或会话身份已失效"));
+                    return AcxStepOutcome.success(Map.of());
+                }
+                answer.set(snapshotForTask(original, taskId));
+                return AcxStepOutcome.success(Map.of());
+            });
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return AcxCompletionProbe.Snapshot.unknown("完成探针等待被中断");
+        } catch (Exception unavailable) {
+            return AcxCompletionProbe.Snapshot.unknown("完成探针宿主门不可用");
+        }
+        return answer.get();
+    }
+
+    private static AcxCompletionProbe.Snapshot snapshotForTask(NumenPlayer companion, String taskId) {
+        TaskRecord current = CompanionTickDispatcher.currentTaskFor(companion.getUUID());
+        if (current != null && taskId.equals(current.publicId())) {
+            Map<String, Object> facts = current.progressFacts(companion.level().getGameTime());
+            if (!facts.isEmpty()) {
+                Map<String, Object> declared = new LinkedHashMap<>(facts);
+                declared.put("wait_reason", "async_accepted");
+                return new AcxCompletionProbe.Snapshot(AcxCompletionProbe.State.RUNNING,
+                        Map.of(AcxBodyAction.PROGRESS_FACTS, declared), "仍在执行: " + taskId);
+            }
+            return AcxCompletionProbe.Snapshot.running("仍在执行: " + taskId);
+        }
+        TaskRecord terminal = CompanionTickDispatcher.finishedTaskFor(companion.getUUID(), taskId);
+        if (terminal == null && current != null) {
+            return AcxCompletionProbe.Snapshot.unknown(
+                    "槽被 " + current.publicId() + " 占用，本任务终态未知（保留挂账等待重试）");
+        }
+        var snapshot = AcxFinishedTask.map(taskId, terminal == null ? null : terminal.publicId(),
+                terminal == null || terminal.getState() == null ? null : terminal.getState().name(),
+                terminal == null || terminal.getResult() == null ? null : terminal.getResult().message());
+        if (snapshot.state() != AcxCompletionProbe.State.DONE) return snapshot;
+        var result = terminal.getResult();
+        return result == null ? snapshot : AcxCompletionProbe.Snapshot.done(result.data(), snapshot.message());
     }
 
     private static AcxBodyAction.Ref bodyRef(TaskRecord task, NumenPlayer companion) {

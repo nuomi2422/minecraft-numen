@@ -62,6 +62,7 @@ public final class BoatNav {
     private int wpIndex;
     private double bestWpDistSq = Double.MAX_VALUE;
     private int noProgressTicks;
+    private long progressVersion;
     private String failReason = "boat navigation failed";
 
     public BoatNav(NumenPlayer player, BlockPos target) {
@@ -76,6 +77,10 @@ public final class BoatNav {
     /** 船这一刻在消耗它的航线吗——任务层的续约(progress lease)读它。 */
     public boolean progressing() {
         return noProgressTicks <= 20;
+    }
+
+    public long progressVersion() {
+        return progressVersion;
     }
 
     public Status tick() {
@@ -105,6 +110,7 @@ public final class BoatNav {
             if (clearWaterLine(at, path.get(i))) {
                 wpIndex = i;
                 bestWpDistSq = Double.MAX_VALUE;
+                progressVersion++;
                 break;
             }
         }
@@ -128,6 +134,7 @@ public final class BoatNav {
         if (distSq < bestWpDistSq - 0.05) {
             bestWpDistSq = distSq;
             noProgressTicks = 0;
+            progressVersion++;
         } else if (++noProgressTicks > STUCK_TICKS) {
             InputDriver.haltVehicle(player);
             failReason = "the boat stopped making headway (beached or blocked)";

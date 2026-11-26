@@ -753,6 +753,17 @@ public final class PlayerNav {
         return current == null ? 0 : current.ticksSinceProgress();
     }
 
+    public long progressVersion() {
+        PathExecutor current = core.getCurrent();
+        return current == null ? -1 : current.progressVersion();
+    }
+
+    public String progressStage() {
+        PathExecutor current = core.getCurrent();
+        if (current != null) return current.progressStage();
+        return planningInFlight() ? "planning" : "idle";
+    }
+
     /** 搜索结论分布摘要,转发自内核(排障日志用)。 */
     public String outcomeSummary() {
         return core.outcomeSummary();

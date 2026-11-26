@@ -146,6 +146,8 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
 
     /** 船腿:开工时坐在船上就先驾船,靠岸(或搁浅)后接步行。null = 没有/已交棒。 */
     private com.dwinovo.numen.core.pathing.execute.BoatNav boatLeg;
+    private long lastNavProgressVersion = Long.MIN_VALUE;
+    private String lastMoveProgressStage = "";
 
     public MoveToCompanionTask(NumenPlayer player, MoveToTaskRecord record) {
         super(player, record);
@@ -158,6 +160,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
     @Override
     protected void onStart() {
         captureMoveStart();
+        reportMoveProgress("start", 0);
         // 载具处置:坐在船上且有明确去处,先驾船——船腿走到离目标最近的水格,
         // 靠岸后接步行(见 tickBoatLeg)。其余情况(矿车没有舵、马的寻路仍按步行
         // 物理算、FIND 要先扫描)直接走步行段;下座驾是步行导航自己的事(PlayerNav)。
@@ -170,6 +173,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                     600 + (long) (repDistance() * TICKS_PER_BLOCK));
             r.extendDeadlineTo(player.level().getGameTime() + extra);
             leaseCapGameTime = player.level().getGameTime() + CHECK_IN_CAP_TICKS;
+            reportMoveProgress("boat", boatLeg.progressVersion());
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[numen-task] goto start kind={} target={},{},{} 驾船先行",
                     r.kind, bx, by, bz);
@@ -191,6 +195,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             r.extendDeadlineTo(player.level().getGameTime() + findExtra);
             leaseCapGameTime = player.level().getGameTime() + CHECK_IN_CAP_TICKS;
             finder.kickScan();
+            reportMoveProgress("scan", 0);
             com.dwinovo.numen.core.Constants.LOG.info(
                     "[numen-task] goto start kind=FIND block={}", r.block);
             return;
@@ -224,6 +229,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
                 ? PlayerNav.to(player, this::blockCompiled, WALK_SPEED, this::reached, terrain())
                 : PlayerNav.toGoal(player, this::goal, WALK_SPEED, this::reached, terrain()))
                 .withTerrainProbe();
+        reportNavProgress();
         com.dwinovo.numen.core.Constants.LOG.info(
                 "[numen-task] goto start kind={} target={},{},{} solid={}",
                 r.kind, bx, by, bz,
@@ -351,6 +357,27 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         };
     }
 
+    private void reportMoveProgress(String stage, long version) {
+        if (stage.equals(lastMoveProgressStage) && version == lastNavProgressVersion) return;
+        lastMoveProgressStage = stage;
+        lastNavProgressVersion = version;
+        double targetDistance = r.kind == MoveToTaskRecord.Kind.FIND && finder == null ? -1 : repDistance();
+        r.reportProgress(player.level().getGameTime(), stage, Map.of(
+                "position", player.blockPosition().toShortString(),
+                "progress_version", version,
+                "target_distance", targetDistance));
+    }
+
+    private void reportNavProgress() {
+        if (nav == null) return;
+        reportMoveProgress("navigate:" + nav.progressStage(), nav.progressVersion());
+    }
+
+    private void reportBoatProgress() {
+        if (boatLeg == null) return;
+        reportMoveProgress("boat", boatLeg.progressVersion());
+    }
+
     @Override
     protected TaskState onTick() {
         // reached() is checked BEFORE the nav==null guard so an already-at-target start
@@ -399,7 +426,9 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
         } else {
             settleTicks++;
         }
-        return switch (nav.tick()) {
+        var navStatus = nav.tick();
+        reportNavProgress();
+        return switch (navStatus) {
             case RUNNING -> TaskState.RUNNING;
             case ARRIVED -> TaskState.SUCCESS;
             case FAILED -> {
@@ -458,6 +487,7 @@ public final class MoveToCompanionTask extends AbstractCompanionTask<MoveToTaskR
             r.extendDeadlineTo(Math.min(now + PROGRESS_LEASE_TICKS, leaseCapGameTime));
         }
         var status = boatLeg.tick();
+        reportBoatProgress();
         if (status == com.dwinovo.numen.core.pathing.execute.BoatNav.Status.RUNNING) {
             return TaskState.RUNNING;
         }
