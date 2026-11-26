@@ -221,6 +221,17 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 烧炼马铃薯不能用品合成判据完成() {
+        SubtaskSpec s = new SubtaskSpec("用熔炉烤熟马铃薯并存入箱子",
+                Map.of("type", "item_crafted", "item", "minecraft:baked_potato", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("不证熔炉产物")),
+                RddPlanGuard.predicateGaps(s).toString());
+        SubtaskSpec held = new SubtaskSpec("用熔炉烤熟马铃薯并存入箱子",
+                Map.of("asset_key", "minecraft:baked_potato", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(held).isEmpty(), RddPlanGuard.predicateGaps(held).toString());
+    }
+
+    @Test
     void 背包持有判断配背包条件不误报世界错配() {
         SubtaskSpec s = new SubtaskSpec("清点背包里的干草块，确认留存数量",
                 Map.of("asset_key", "minecraft:hay_block", "minimum", 1), null,

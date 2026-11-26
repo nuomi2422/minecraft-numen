@@ -35,6 +35,7 @@ class EarlyAchievementInventoryRegressionTest {
         test.strategicDerivationRemainsAvailableOutsideCompletion();
         test.statQueryDoesNotCaptureLateBaseline();
         test.entryBaselineAllowsFirstCraftDelta();
+        test.pickupStatFallsBackToEntryInventoryDelta();
         test.unknownStatReadDoesNotBecomeZeroBaseline();
         test.lateOldAttemptBaselineIsNotOverwritten();
         test.entryHelperLocksZeroThenFirstCraftDelta();
@@ -44,7 +45,7 @@ class EarlyAchievementInventoryRegressionTest {
         test.entryHelperIgnoresNonStatCurrentTask();
         test.entryHelperAfterRealActivationLocksFirstCraft();
         test.statEntryWiringIsPresentAtAllSevenRunStartSites();
-        System.out.println("EarlyAchievementInventoryRegressionTest: 15 passed, 0 failed");
+        System.out.println("EarlyAchievementInventoryRegressionTest: 16 passed, 0 failed");
     }
 
     private static Path detectorSource() {
@@ -68,6 +69,7 @@ class EarlyAchievementInventoryRegressionTest {
         String probe = """
                 import java.util.Map;
                 import com.dwinovo.numen.rdd.api.Subtask;
+                import com.dwinovo.numen.rdd.api.ResourceUse;
                 import com.dwinovo.numen.rdd.core.HardCodedEvaluator;
                 public class InventoryDetectorProbe {
                     static class NumenPlayer {}
@@ -176,6 +178,30 @@ class EarlyAchievementInventoryRegressionTest {
         chain.startCurrent();
         chain.captureStatBaseline(task.id(), 0); // what the real start hook does before the AI acts
         assertTrue(evaluateStat(method, chain, task, 1), "first craft after entry must satisfy minimum=1");
+    }
+
+    @Test
+    void pickupStatFallsBackToEntryInventoryDelta() throws Exception {
+        Method method = compileStatDeltaMethod();
+        TaskChain chain = statChain(Map.of("type", "item_picked_up",
+                "item", "minecraft:coal", "minimum", 1));
+        Subtask task = chain.currentSubtask();
+        chain.startCurrentWithCounts(Map.of("minecraft:coal", 0));
+        chain.captureStatBaseline(task.id(), 0);
+        assertFalse(evaluateStatInventory(method, chain, task, 0, Map.of("minecraft:coal", 0)),
+                "no stat or inventory delta is not completion");
+        assertTrue(evaluateStatInventory(method, chain, task, 0, Map.of("minecraft:coal", 16)),
+                "real gathered coal satisfies pickup even when the entity stat did not advance");
+        assertFalse(evaluateStatInventory(method, chain, task, 0, Map.of("minecraft:coal", 0)),
+                "later empty inventory does not erase the need for a current net gain");
+
+        TaskChain preexisting = statChain(Map.of("type", "item_picked_up",
+                "item", "minecraft:coal", "minimum", 1));
+        Subtask existing = preexisting.currentSubtask();
+        preexisting.startCurrentWithCounts(Map.of("minecraft:coal", 5));
+        preexisting.captureStatBaseline(existing.id(), 0);
+        assertFalse(evaluateStatInventory(method, preexisting, existing, 0, Map.of("minecraft:coal", 5)),
+                "preexisting inventory must not become a fake pickup delta");
     }
 
     @Test
@@ -323,7 +349,12 @@ class EarlyAchievementInventoryRegressionTest {
 
     private static boolean evaluateStat(Method method, TaskChain chain, Subtask task, int count)
             throws Exception {
-        return (boolean) method.invoke(null, chain, task, count);
+        return evaluateStatInventory(method, chain, task, count, Map.of());
+    }
+
+    private static boolean evaluateStatInventory(Method method, TaskChain chain, Subtask task, int count,
+                                                 Map<String, Integer> inventory) throws Exception {
+        return (boolean) method.invoke(null, chain, task, count, inventory);
     }
 
     private static Method compileStatDeltaMethod() throws Exception {
@@ -351,9 +382,9 @@ class EarlyAchievementInventoryRegressionTest {
                         }
                     }
                 """ + method + """
-                    public static boolean evaluate(TaskChain c, Subtask task, int n) {
+                    public static boolean evaluate(TaskChain c, Subtask task, int n, Map<String, Integer> inventory) {
                         chain = c; count = n;
-                        return statDeltaSatisfied(new NumenPlayer(), task, Map.of());
+                        return statDeltaSatisfied(new NumenPlayer(), task, inventory);
                     }
                 }
                 """;
@@ -369,7 +400,8 @@ class EarlyAchievementInventoryRegressionTest {
         assertEquals(0, result, "could not compile the real statDeltaSatisfied method");
         var loader = new URLClassLoader(new java.net.URL[]{dir.toUri().toURL()},
                 EarlyAchievementInventoryRegressionTest.class.getClassLoader());
-        return loader.loadClass("StatDeltaProbe").getMethod("evaluate", TaskChain.class, Subtask.class, int.class);
+        return loader.loadClass("StatDeltaProbe").getMethod("evaluate", TaskChain.class, Subtask.class,
+                int.class, Map.class);
     }
 
     private static Class<?> compileStatCaptureProbe() throws Exception {

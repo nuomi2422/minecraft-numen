@@ -1191,7 +1191,17 @@ final class RddDetector {
         int base = baseline.getOrDefault("value", current);
         Object rawMin = task.condition().get("minimum");
         int minimum = rawMin instanceof Number n && n.intValue() > 0 ? n.intValue() : 1;
-        return current - base >= minimum;
+        if (current - base >= minimum) return true;
+        if ("item_picked_up".equals(task.condition().get("type"))
+                && task.condition().get("item") instanceof String item && !item.startsWith("#")
+                && counts != null) {
+            Map<String, Integer> inventoryBaseline = rt.chain().acquireBaseline(task.id());
+            if (inventoryBaseline != null) {
+                int gained = counts.getOrDefault(item, 0) - inventoryBaseline.getOrDefault(item, 0);
+                if (gained >= minimum) return true;
+            }
+        }
+        return false;
     }
 
     /**
