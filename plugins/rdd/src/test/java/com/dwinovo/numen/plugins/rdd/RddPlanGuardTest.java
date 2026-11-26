@@ -247,7 +247,7 @@ class RddPlanGuardTest {
                 Map.of("type", "equipment", "slots", Map.of(
                         "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
                         "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
-        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("执行动作")),
+        assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("附魔结果")),
                 RddPlanGuard.predicateGaps(s).toString());
     }
 
@@ -322,6 +322,28 @@ class RddPlanGuardTest {
                         "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
         assertTrue(RddPlanGuard.predicateGaps(s).stream().anyMatch(g -> g.contains("装备外要求")),
                 RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
+    void 单槽equipment可证明拿到主手或副手终态() {
+        SubtaskSpec main = new SubtaskSpec("把背包里已有的iron_sword拿到主手；不检查副手、护甲或食物",
+                Map.of("type", "equipment", "item", "minecraft:iron_sword", "slot", "mainhand", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(main).isEmpty(), RddPlanGuard.predicateGaps(main).toString());
+        SubtaskSpec off = new SubtaskSpec("把shield拿到副手；不提主手、食物或护甲",
+                Map.of("type", "equipment", "item", "minecraft:shield", "slot", "offhand", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(off).isEmpty(), RddPlanGuard.predicateGaps(off).toString());
+    }
+
+    @Test
+    void 单槽equipment仍不能冒充食物或附魔() {
+        SubtaskSpec food = new SubtaskSpec("主手拿铁剑，并随身带至少16份熟食",
+                Map.of("type", "equipment", "item", "minecraft:iron_sword", "slot", "mainhand", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(food).stream().anyMatch(g -> g.contains("装备外要求")),
+                RddPlanGuard.predicateGaps(food).toString());
+        SubtaskSpec enchant = new SubtaskSpec("给主手铁剑附魔Protection I",
+                Map.of("type", "equipment", "item", "minecraft:iron_sword", "slot", "mainhand", "minimum", 1), null);
+        assertTrue(RddPlanGuard.predicateGaps(enchant).stream().anyMatch(g -> g.contains("附魔结果")),
+                RddPlanGuard.predicateGaps(enchant).toString());
     }
 
     @Test

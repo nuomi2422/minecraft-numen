@@ -110,8 +110,19 @@ final class RddPlanGuard {
         if ("shelter".equals(conditionType) && positiveMatch(d, FACILITY_ITEM)) {
             gaps.add("据点设施（shelter只证墙顶遮蔽，不证床/箱/工作台/熔炉/食物）");
         }
-        if ("equipment".equals(conditionType) && positiveMatch(d, EQUIPMENT_EXTRA)) {
-            gaps.add("装备外要求（equipment只证护甲槽，不证主手/副手/食物；必须拆步）");
+        if ("equipment".equals(conditionType) && d.contains("附魔")) {
+            gaps.add("附魔结果（普通equipment只证物品与槽位，不证Protection I等等级）");
+        }
+        if ("equipment".equals(conditionType)) {
+            boolean armorSlots = c.containsKey("slots");
+            boolean mainhandCovered = "mainhand".equals(String.valueOf(c.get("slot")));
+            boolean offhandCovered = "offhand".equals(String.valueOf(c.get("slot")));
+            boolean uncoveredExtra = armorSlots ? positiveMatch(d, EQUIPMENT_EXTRA)
+                    : mainhandCovered || offhandCovered ? positiveMatch(d, FOOD_EXTRA)
+                    : positiveMatch(d, EQUIPMENT_EXTRA);
+            if (uncoveredExtra) {
+                gaps.add("装备外要求（equipment只证已声明槽位，不证其他主手/副手/食物；必须拆步）");
+            }
         }
         if ("dimension".equals(conditionType) && positiveMatch(d, TRAVEL_INTENT)) {
             gaps.add("迁移（dimension只证当前维度，不能证明前往远处或建立新基地）");
@@ -142,7 +153,7 @@ final class RddPlanGuard {
     }
 
     private static boolean stateOnlyPredicate(String type) {
-        return java.util.Set.of("equipment", "base", "dimension", "stocked", "lit", "shelter",
+        return java.util.Set.of("base", "dimension", "stocked", "lit", "shelter",
                 "container_at", "container_nearby").contains(type);
     }
 
@@ -153,7 +164,7 @@ final class RddPlanGuard {
     private static final java.util.regex.Pattern MUTATION_ACTION =
             java.util.regex.Pattern.compile("(?:制作|合成|打造|采集|收集|获得|拿到|存入|放入|补充|补做|建立|搭建|扩建|迁移|前往|附魔|烧炼|烤熟|播种|种下|击杀|攻击|挖掘|开采)");
     private static final java.util.regex.Pattern NEGATED_CLAUSE =
-            java.util.regex.Pattern.compile("(?:不检查|不验证|不要求|无需|不必|不得|禁止|不要|不包括|不制作|不合成|不打造|不采集|不收集|不存入|不放入|不补充|不补做|不建立|不搭建|不扩建|不迁移|不前往|不附魔|不烧炼|不烤熟|不播种|不种下|不击杀|不攻击|不挖掘|不开采)");
+            java.util.regex.Pattern.compile("(?:不检查|不验证|不要求|不提|无需|不必|不得|禁止|不要|不包括|不制作|不合成|不打造|不采集|不收集|不存入|不放入|不补充|不补做|不建立|不搭建|不扩建|不迁移|不前往|不附魔|不烧炼|不烤熟|不播种|不种下|不击杀|不攻击|不挖掘|不开采)");
 
     private static boolean positiveMatch(String description, java.util.regex.Pattern pattern) {
         var matcher = pattern.matcher(description);
@@ -174,6 +185,8 @@ final class RddPlanGuard {
             java.util.regex.Pattern.compile("(?:床|箱|工作台|熔炉|食物|熟食)");
     private static final java.util.regex.Pattern EQUIPMENT_EXTRA =
             java.util.regex.Pattern.compile("(?:主手|副手|食物|熟食|可食)");
+    private static final java.util.regex.Pattern FOOD_EXTRA =
+            java.util.regex.Pattern.compile("(?:食物|熟食|可食)");
     private static final java.util.regex.Pattern TRAVEL_INTENT =
             java.util.regex.Pattern.compile("(?:迁移|前往|远处|新地点|\\d{2,4}\\s*格)");
 
