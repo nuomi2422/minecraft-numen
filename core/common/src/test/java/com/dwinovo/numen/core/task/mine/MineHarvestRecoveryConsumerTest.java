@@ -287,7 +287,8 @@ class MineHarvestRecoveryConsumerTest {
                         .digest(source.getBytes(StandardCharsets.UTF_8))));
         StringBuilder methods = new StringBuilder();
         for (String signature : List.of("    protected TaskState onTick() {",
-                "    private TaskState retryFailedNavigation() {", "    private void invalidateNavigationFailure() {",
+                "    private TaskState retryFailedNavigation() {", "    private TaskState waterRecoveryTick() {",
+                "    private void invalidateNavigationFailure() {",
                 "    private String navigationFailureSuffix() {", "    private void noteProgress() {",
                 "    private TaskState stalledOut() {", "    private void mineProgress(BlockPos pos) {",
                 "    private void clearNoShot() {", "    protected Map<String, Object> resultData() {",
@@ -335,18 +336,22 @@ class MineHarvestRecoveryConsumerTest {
                     static class Level { long now; BlockState getBlockState(BlockPos p){return new BlockState();} long getGameTime(){return now;} }
                     static class BlockState { boolean isAir(){return false;} Object getBlock(){return "ore";} }
                     static class NumenPlayer { BlockPos feet=new BlockPos(0,64,0); Level level=new Level(); int halts; boolean shifting=true;
-                        Level level(){return level;} BlockPos blockPosition(){return feet;} void setShiftKeyDown(boolean b){shifting=b;} }
+                        java.util.UUID id=java.util.UUID.randomUUID();
+                        Level level(){return level;} BlockPos blockPosition(){return feet;} void setShiftKeyDown(boolean b){shifting=b;}
+                        java.util.UUID getUUID(){return id;} }
+                    static class WaterRecovery { static boolean active; static boolean requested(java.util.UUID id){return active;} }
                     static class InputDriver { static void halt(NumenPlayer p){p.halts++;} }
                     enum StopReason { PREEMPTED }
                     enum NavState { RUNNING, ARRIVED, FAILED }
                     static class PlayerNav {
-                        String reason; boolean planning,paused; NavState state=NavState.FAILED;
+                        String reason; boolean planning,paused; int ticks; NavState state=NavState.FAILED;
                         PlayerNav(String reason){this.reason=reason;} String failReason(){return reason;}
                         FailureType failType(){return FailureType.NO_PATH;} boolean planningInFlight(){return planning;}
-                        NavState tick(){return state;} void pause(){paused=true;}
+                        NavState tick(){ticks++;return state;} void pause(){paused=true;}
                         enum ContextProvider { TERRAFORM }
+                        static NavState createdState=NavState.FAILED;
                         static PlayerNav toRevalidating(NumenPlayer p,java.util.function.Supplier<Object> g,double s,
-                                java.util.function.BooleanSupplier b,ContextProvider c){return new PlayerNav("new route");}
+                                java.util.function.BooleanSupplier b,ContextProvider c){PlayerNav n=new PlayerNav("new route");n.state=createdState;return n;}
                         static PlayerNav toGoal(NumenPlayer p,java.util.function.Supplier<Object> g,double s,
                                 java.util.function.BooleanSupplier b,ContextProvider c){return new PlayerNav("branch");}
                     }
@@ -361,8 +366,8 @@ class MineHarvestRecoveryConsumerTest {
                     }
                     static class Digger {
                         enum Result { BROKE_TARGET, BROKE_OCCLUDER, NO_SHOT, PROGRESSING }
-                        Result next=Result.BROKE_TARGET; BlockPos current(){return null;}
-                        Result digStep(BlockPos p){return next;} void cancel(){}
+                        Result next=Result.BROKE_TARGET; boolean cancelled; BlockPos locked; BlockPos current(){return locked;}
+                        Result digStep(BlockPos p){return next;} void cancel(){cancelled=true;}
                     }
                     final Request r=new Request(); final Digger digger=new Digger();
                     final List<BlockPos> knownOres=new ArrayList<>(List.of(new BlockPos(3,57,4)));
@@ -382,7 +387,20 @@ class MineHarvestRecoveryConsumerTest {
                     TaskState noOreFailure(){fail("empty",FailureType.MINED_OUT);return TaskState.FAILED;}
                 RECORD
                 METHODS
+                    public static Map<String,Object> runWaterRecovery(boolean warmNav) {
+                        NavigationFixture t=new NavigationFixture();
+                        WaterRecovery.active=true; PlayerNav.createdState=NavState.RUNNING;
+                        t.reachable=new BlockPos(1,64,0);
+                        t.latchedMineTarget=t.knownOres.get(0); t.digger.locked=t.latchedMineTarget;
+                        t.player.level.now=400;
+                        if(warmNav) {t.nav=new PlayerNav("warm route");t.nav.state=NavState.RUNNING;}
+                        TaskState state=t.onTick();
+                        return Map.of("state",state.name(),"diggerCancelled",t.digger.cancelled,
+                                "latchCleared",t.latchedMineTarget==null,"navTicks",t.nav.ticks,
+                                "navPreserved",t.nav!=null,"progressTick",t.lastProgressTick);
+                    }
                     public static Map<String,Object> run(String scenario) {
+                        WaterRecovery.active=false; PlayerNav.createdState=NavState.FAILED;
                         NavigationFixture t=new NavigationFixture();
                         if(scenario.equals("reorder")) t.knownOres.add(new BlockPos(5,57,6));
                         if(scenario.equals("duplicateDrop")) t.observedDrops=List.of(new BlockPos(1,64,1));
@@ -425,6 +443,18 @@ class MineHarvestRecoveryConsumerTest {
                     }
                 }
                 """.replace("BASE_STOP",baseStop).replace("RECORD",record).replace("METHODS",methods));
+    }
+
+    @Test void waterRecoveryInterruptsLatchedDigAndTicksNavigationEvenWhenTargetReachable() throws Exception {
+        for (boolean warmNav : List.of(true, false)) {
+            Map<String,Object> result=runWaterRecovery(warmNav);
+            assertEquals("RUNNING",result.get("state"));
+            assertEquals(true,result.get("diggerCancelled"));
+            assertEquals(true,result.get("latchCleared"));
+            assertEquals(1,result.get("navTicks"));
+            assertEquals(true,result.get("navPreserved"));
+            assertEquals(400L,result.get("progressTick"));
+        }
     }
 
     @Test void stalledMineDeliversLatestConstraintWithOriginalFailureAndRecovery() throws Exception {
@@ -472,6 +502,11 @@ class MineHarvestRecoveryConsumerTest {
         var planning=runNavigation("planning");
         assertEquals("RUNNING",planning.get("state"));assertEquals("",planning.get("message"));
         assertEquals(1L,planning.get("progressTick"),"planning tick is still excluded from the stall clock");
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String,Object> runWaterRecovery(boolean warmNav) throws Exception {
+        return (Map<String,Object>)navigationFixture.getMethod("runWaterRecovery",boolean.class).invoke(null,warmNav);
     }
 
     @SuppressWarnings("unchecked")

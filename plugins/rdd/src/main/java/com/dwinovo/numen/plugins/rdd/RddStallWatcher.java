@@ -4,6 +4,7 @@ import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.rdd.api.Subtask;
 import com.dwinovo.numen.rdd.core.RddRuntime;
 import com.dwinovo.numen.task.CompanionTickDispatcher;
+import com.dwinovo.numen.task.WaterRecovery;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -343,13 +344,22 @@ final class RddStallWatcher {
                         "reason", "repeated stalls (" + total + "); cause requires evidence"));
                 stallCounts.remove(ap.getUUID());
             }
+            boolean waterStall = ap.isInWater();
+            if (waterStall) {
+                WaterRecovery.request(ap.getUUID(), ap.blockPosition(), ap.level().getGameTime());
+                RddMonitor.publish("water_recovery_requested", Map.of(
+                        "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                        "pos", ap.blockPosition().toShortString(), "unchangedChecks", unchanged));
+            }
             rt.chain().markStalled(current.id(), "observed work unchanged for " + check.limit() + " checks");
             // ★ 这一句是 2026-10-03 实测最大的刷屏源（42 次，话术一字不变）。同一状态下只发一次：
             // 没真进展就别把同一句话说第二遍，状态机照样往下走（响应窗 / 判失败不受影响）。
             // ★ 2026-10-06：记账走 nudgeOnce —— 闸放行且真的注入出去才记；
             //   被总闸挡下时**不记**，下一个检查周期（闸开了）会重试，而不是永久沉默。
-            nudgeOnce(ap.getUUID(), "stall", stateKey,
-                    "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
+            if (!waterStall) {
+                nudgeOnce(ap.getUUID(), "stall", stateKey,
+                        "你的目标「" + current.description() + "」还在，但可见资产、容器生产和身体进度在观察窗口内没有变化。请核对真实工具结果、材料和生产条件，再决定下一步。");
+            }
             RddMonitor.publish("subtask_stalled", Map.of("subtask", current.id(),
                     "reason", "observed work unchanged", "source", observation.source(),
                     "graceRemainingSeconds", 0, "graceLimitSeconds", check.limit()));
@@ -395,6 +405,23 @@ final class RddStallWatcher {
             //   被挡时只会在监测台留一条 nudge_throttled，提醒本身丢了）。
             if (!idleLlmInFlight(ap.getUUID(), observation)) {
                 nudgeOnce(ap.getUUID(), "stalled_entry", stateKey, "你卡住了吗？缺什么工具或材料？");
+            }
+            return;
+        }
+        WaterRecovery.State recovery = WaterRecovery.poll(ap.getUUID(), ap.level().getGameTime());
+        if (recovery == WaterRecovery.State.PENDING || recovery == WaterRecovery.State.RECOVERING) {
+            return;
+        }
+        if (recovery == WaterRecovery.State.SUCCEEDED || recovery == WaterRecovery.State.FAILED) {
+            rt.chain().resumeFromStalled(current.id());
+            stalls.put(ap.getUUID(), new StallState(current.id(), windowFp, stateKey, 0, 0));
+            RddMonitor.publish("water_stall_recovery", Map.of(
+                    "companionId", ap.getUUID().toString(), "subtask", current.id(),
+                    "outcome", recovery.name(), "action", "resume original task with local water avoidance"));
+            if (recovery == WaterRecovery.State.FAILED) {
+                nudgeOnce(ap.getUUID(), "water_escape_failed", stateKey,
+                        "刚才在水中卡住，自动垫脚/上浮没有成功；这块水区已临时拉黑。"
+                        + "请换成绕路或先准备垫脚材料，别再原样走回同一处。");
             }
             return;
         }
@@ -525,6 +552,7 @@ final class RddStallWatcher {
     void clear(UUID uuid) {
         stalls.remove(uuid);
         stallCounts.remove(uuid);
+        WaterRecovery.clearRequest(uuid);
         RddRepeatQueryWatcher.clear(uuid);
         // 2026-10-03：原来只清这两个，nudgedFingerprints 成了纯泄漏（换二级也不清）。
         nudgedStates.remove(uuid);

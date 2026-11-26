@@ -3,6 +3,7 @@ import com.dwinovo.numen.core.WorkProfile;
 import com.dwinovo.numen.core.FailureType;
 
 import com.dwinovo.numen.task.TaskState;
+import com.dwinovo.numen.task.WaterRecovery;
 
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.core.pathing.calc.NavGoal;
@@ -318,6 +319,13 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
 
         Level level = player.level();
 
+        if (WaterRecovery.requested(player.getUUID())) {
+            digger.cancel();
+            latchedMineTarget = null;
+            noteProgress();
+            return waterRecoveryTick();
+        }
+
         // Maintain the ore list every tick — INCLUDING while a dig below is latched:
         // prune (cheap — knownOres is capped at 64) revalidates against the live world;
         // the shared TargetIndex is queried on demand (list low / new chunk / slow
@@ -471,6 +479,19 @@ public final class MineCompanionTask extends AbstractCompanionTask<MineBlockTask
             case FAILED -> { stopNav(); return TaskState.RUNNING; } // boxed in — rescan/retry
         }
         return TaskState.RUNNING;
+    }
+
+    private TaskState waterRecoveryTick() {
+        if (nav == null || navIsBranch) {
+            stopNav();
+            nav = PlayerNav.toRevalidating(player, this::oreFieldCompiled, MINE_SPEED,
+                    () -> reachableTarget() != null, PlayerNav.ContextProvider.TERRAFORM);
+            navIsBranch = false;
+        }
+        return switch (nav.tick()) {
+            case RUNNING, ARRIVED -> TaskState.RUNNING;
+            case FAILED -> retryFailedNavigation();
+        };
     }
 
     /** Keep the route diagnostic across cooldown retries, but not across a changed context. */

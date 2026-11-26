@@ -63,4 +63,20 @@ public record ResourceUse(String assetKey, int quantity, Kind kind) {
         }
         return true;
     }
+
+    /**
+     * A placed bed is the base fact itself; it must not also be required in the backpack.
+     * Other base obligations remain unchanged, and non-base steps keep every RETAIN.
+     */
+    public static List<ResourceUse> completionObligations(List<ResourceUse> uses, Map<String, Object> condition) {
+        if (uses == null || uses.isEmpty()) return List.of();
+        if (condition == null || !"base".equals(condition.get("type"))) return uses;
+        return uses.stream()
+                .filter(use -> !(use.kind() == Kind.RETAIN && isBedAsset(use.assetKey())))
+                .toList();
+    }
+
+    private static boolean isBedAsset(String key) {
+        return "minecraft:bed".equals(key) || key.endsWith("_bed");
+    }
 }

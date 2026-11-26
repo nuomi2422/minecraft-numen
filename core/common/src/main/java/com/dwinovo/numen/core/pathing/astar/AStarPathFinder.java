@@ -163,6 +163,10 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                             moves, currentNode.x, currentNode.y, currentNode.z, res.y,
                             currentNode.y + moves.yOffset));
                 }
+                if (calcContext.isAvoided(currentNode.x, currentNode.y, currentNode.z,
+                        res.x, res.y, res.z)) {
+                    continue;
+                }
                 long hashCode = PathNode.longHash(res.x, res.y, res.z);
                 if (isFavoring) {
                     // 折扣乘在动作成本上,按目的格哈希

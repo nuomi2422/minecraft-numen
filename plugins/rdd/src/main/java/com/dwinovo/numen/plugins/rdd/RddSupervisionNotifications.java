@@ -217,6 +217,9 @@ final class RddSupervisionNotifications {
         }
         String msg = "【开工】现在动手做这一步：「" + cur.description() + "」。"
                 + "先调用工具真正执行，不要只回文字；做完把结果报回来，我核对真实资产后再推进下一步。"
+                + "【自主执行职责】主人不在线，任务链必须由你连续自主推进：不要向玩家提问、请求确认、等待回复，"
+                + "也不要把决定推给玩家。遇到突发、异常、前提不合理或明显低效，必须主动用 report_task_concern 上报，"
+                + "这是你的职责而不是可选项；上报后继续查事实、换可逆的替代方案推进，确在无路可走才停。"
                 + "如果这一步现在做不了，用 report_task_concern 上报卡点，不要默默无视。";
         if (!nudge(companionId, msg)) {                                // 发失败不记账 → 下个 tick 重试
             kickoffSkip(companionId, chain, "nudge_failed", observationToken);

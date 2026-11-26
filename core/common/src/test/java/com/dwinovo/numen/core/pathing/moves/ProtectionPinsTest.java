@@ -8,6 +8,7 @@ import java.util.Set;
 
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
 import com.dwinovo.numen.core.pathing.util.BlockEntityAware;
+import com.dwinovo.numen.task.WaterRecovery;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -128,6 +129,7 @@ class ProtectionPinsTest {
         synched.set(dataKey(net.minecraft.world.entity.LivingEntity.class, "DATA_HEALTH_ID"),
                 20.0f);   // 满血
         p.getInventory().items.set(0, new ItemStack(Items.DIRT));
+        p.setUUID(java.util.UUID.randomUUID());
         return p;
     }
 
@@ -153,9 +155,26 @@ class ProtectionPinsTest {
 
     @AfterEach
     void tearDown() {
+        if (booted) WaterRecovery.clear(player.getUUID());
         NavSettings s = NavSettings.get();
         s.considerPotionEffects = savedConsiderPotions;
         s.allowWaterBucketFall = savedAllowWaterBucketFall;
+    }
+
+    @Test
+    void waterRecoveryZoneIsFrozenIntoEachPathingContext() {
+        WaterRecovery.request(player.getUUID(), SRC, 0L);
+        WaterRecovery.begin(player.getUUID(), 0L);
+        WaterRecovery.succeed(player.getUUID(), 0L);
+
+        CalculationContext ctx = context(floored(), LongSets.emptySet());
+        int fromX = SRC.getX() + 10;
+        assertTrue(ctx.isAvoided(fromX, SRC.getY(), SRC.getZ(), SRC.getX(), SRC.getY(), SRC.getZ()));
+        assertTrue(ctx.isAvoided(fromX, SRC.getY(), SRC.getZ(), SRC.getX() + 4, SRC.getY() + 2, SRC.getZ() - 4));
+        assertFalse(ctx.isAvoided(fromX, SRC.getY(), SRC.getZ(), SRC.getX() + 5, SRC.getY(), SRC.getZ()));
+        assertFalse(ctx.isAvoided(fromX, SRC.getY(), SRC.getZ(), SRC.getX(), SRC.getY() + 3, SRC.getZ()));
+        assertTrue(ctx.isAvoided(SRC.getX(), SRC.getY(), SRC.getZ(), SRC.getX(), SRC.getY(), SRC.getZ()));
+        assertFalse(ctx.isAvoided(SRC.getX(), SRC.getY(), SRC.getZ(), SRC.getX() + 1, SRC.getY(), SRC.getZ()));
     }
 
     // ==================== 假世界 ====================

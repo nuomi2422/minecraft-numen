@@ -59,6 +59,18 @@ class ResourceUseProtocolTest {
                 "no RETAIN leaves the original output condition in charge; it does not prove eating");
     }
 
+    @Test void placedBedBaseDoesNotAlsoRequireTheSameBedInBackpack() {
+        Map<String, Object> base = Map.of("type", "base");
+        var bed = use("yellow_bed", 1, ResourceUse.Kind.RETAIN);
+        var torch = use("torch", 4, ResourceUse.Kind.RETAIN);
+        var uses = List.of(bed, torch);
+        assertEquals(List.of(torch), ResourceUse.completionObligations(uses, base));
+        assertTrue(ResourceUse.retainedSatisfied(
+                ResourceUse.completionObligations(List.of(bed), base), Map.of()));
+        assertEquals(uses, ResourceUse.completionObligations(uses, FURNACE),
+                "non-base steps must keep every RETAIN obligation");
+    }
+
     @Test void boundsDuplicatesAndExactTransferAreValidatedNotSilentlyDropped() {
         assertThrows(IllegalArgumentException.class,()->use("cobblestone",0,ResourceUse.Kind.CONSUME));
         assertThrows(IllegalArgumentException.class,()->new ResourceUse("#minecraft:logs",1,ResourceUse.Kind.CONSUME));

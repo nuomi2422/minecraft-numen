@@ -294,6 +294,13 @@ public final class PathExecutor {
             }
         }
         double currentCost = movement.recalculateCost(context);
+        BlockPos currentDest = movement.getDest();
+        if (context.isAvoided(feet.getX(), feet.getY(), feet.getZ(),
+                currentDest.getX(), currentDest.getY(), currentDest.getZ()) && canCancel) {
+            Constants.LOG.debug("世界已变化,当前移动终点进入临时避走区,取消");
+            cancel("当前移动终点进入临时避走区");
+            return true;
+        }
         if (currentCost >= COST_INF && canCancel) {
             Constants.LOG.debug("世界已变化,当前移动不可行,取消");
             cancel("世界已变化," + describe(movement) + " 不再可行");
@@ -438,7 +445,11 @@ public final class PathExecutor {
                                       int lookahead, CalculationContext context) {
         for (int i = 1; i < lookahead && pathPosition + i < movements.size(); i++) {
             Movement future = movements.get(pathPosition + i);
-            if (future.calculateCost(context, new MutableMoveResult()) >= COST_INF) {
+            BlockPos dest = future.getDest();
+            BlockPos src = future.getSrc();
+            if ((context != null && context.isAvoided(src.getX(), src.getY(), src.getZ(),
+                    dest.getX(), dest.getY(), dest.getZ()))
+                    || future.calculateCost(context, new MutableMoveResult()) >= COST_INF) {
                 return pathPosition + i;
             }
         }

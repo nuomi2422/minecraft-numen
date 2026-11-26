@@ -1,6 +1,7 @@
 package com.dwinovo.numen.core.pathing.moves;
 
 import com.dwinovo.numen.core.pathing.settings.ScaffoldMaterials;
+import com.dwinovo.numen.task.WaterRecovery;
 import java.util.List;
 
 import com.dwinovo.numen.core.pathing.settings.NavSettings;
@@ -95,6 +96,8 @@ public class CalculationContext {
     public final LongSet sacred;
     /** 执行层证明无支撑放不上的格:放置成本直接 INF。 */
     public final LongSet deniedPlace;
+    /** 水中卡死恢复后,本段时间内必须绕开的局部区域。 */
+    public final List<WaterRecovery.AvoidZone> avoided;
 
     /** 世界可建高度下界(含)与上界(不含)。 */
     public final int worldBottom;
@@ -124,6 +127,11 @@ public class CalculationContext {
         this.permit = permit;
         this.sacred = sacred;
         this.deniedPlace = deniedPlace;
+        long gameTime = 0L;
+        if (player != null && player.level() != null) {
+            gameTime = player.level().getGameTime();
+        }
+        this.avoided = WaterRecovery.avoidedZones(player == null ? null : player.getUUID(), gameTime);
         this.toolSet = new ToolSet(player);
         // 免耗材画像(创造)恒有耗材:执行层选料时会自动补一组(伸手进创造
         // 物品栏的代码版),规划器因此敢想所有需要垫方块的路线——不然空手
@@ -276,6 +284,16 @@ public class CalculationContext {
 
     public boolean isLoaded(int x, int z) {
         return loadedTest.isLoaded(x, z);
+    }
+
+    public boolean isAvoided(int fromX, int fromY, int fromZ, int toX, int toY, int toZ) {
+        for (WaterRecovery.AvoidZone zone : avoided) {
+            if (zone.contains(toX, toY, toZ)
+                    && !zone.allowsExit(fromX, fromY, fromZ, toX, toY, toZ)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ==================== 成本函数 ====================

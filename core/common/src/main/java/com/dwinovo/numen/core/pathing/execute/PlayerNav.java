@@ -25,6 +25,7 @@ import com.dwinovo.numen.core.pathing.util.NavProfiler;
 import com.dwinovo.numen.core.FailureType;
 import com.dwinovo.numen.entity.InputDriver;
 import com.dwinovo.numen.entity.NumenPlayer;
+import com.dwinovo.numen.task.WaterRecovery;
 
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -140,6 +141,8 @@ public final class PlayerNav {
     /** 终局闩:FAILED 一经裁定即稳定持续(failReason 不再被覆写)。 */
     private boolean failedTerminal;
     private boolean stopped;
+    private BlockPos waterRecoveryTarget;
+    private long waterRecoveryDeadline;
 
     /** 最近一次搜索上下文(验尸文案的素材:有无脚手架耗材等)。 */
     private CalculationContext lastSearchContext;
@@ -273,14 +276,18 @@ public final class PlayerNav {
 
     /** 搜索用冻结上下文:快照世界 + 快照背包,穿透三个语义开关。 */
     private CalculationContext searchContext() {
-        CalculationContext ctx = contextProvider.forSearch(player, sacred, deniedPlace);
+        CalculationContext ctx = waterRecoveryTarget == null
+                ? contextProvider.forSearch(player, sacred, deniedPlace)
+                : ContextFactory.forSearch(player, sacred, deniedPlace, TerrainPermit.TERRAFORM);
         lastSearchContext = ctx;
         return ctx;
     }
 
     /** 执行期复核用实时上下文:活世界 + 当下背包,同一套语义开关。 */
     private CalculationContext executionContext() {
-        return contextProvider.forExecution(player, sacred, deniedPlace);
+        return waterRecoveryTarget == null
+                ? contextProvider.forExecution(player, sacred, deniedPlace)
+                : ContextFactory.forExecution(player, sacred, deniedPlace, TerrainPermit.TERRAFORM);
     }
 
     /**
@@ -323,7 +330,8 @@ public final class PlayerNav {
 
     public Status tick() {
         NavProfiler.tickFrame();
-        if (reached.getAsBoolean()) {
+        if (reached.getAsBoolean() && waterRecoveryTarget == null
+                && !WaterRecovery.requested(player.getUUID())) {
             return Status.ARRIVED;
         }
         if (failedTerminal) {
@@ -333,6 +341,27 @@ public final class PlayerNav {
             failReason = "target lost";
             failType = FailureType.TARGET_LOST;
             return Status.FAILED;
+        }
+        long gameTime = player.level().getGameTime();
+        if (waterRecoveryTarget == null && WaterRecovery.requested(player.getUUID())) {
+            if (player.isInWater() && core.isSafeToCancel()) {
+                BlockPos origin = WaterRecovery.begin(player.getUUID(), gameTime);
+                if (origin != null) {
+                    beginWaterRecovery(origin, gameTime);
+                }
+            } else if (!player.isInWater() && player.onGround()) {
+                WaterRecovery.succeed(player.getUUID(), gameTime);
+            }
+        }
+        if (waterRecoveryTarget != null) {
+            return tickWaterRecovery(gameTime);
+        }
+        if (WaterRecovery.requested(player.getUUID())) {
+            InputDriver.halt(player);
+            return Status.RUNNING;
+        }
+        if (reached.getAsBoolean()) {
+            return Status.ARRIVED;
         }
         if (terraformProbe != null) {
             return pollTerraformProbe();
@@ -447,6 +476,80 @@ public final class PlayerNav {
                 return Status.ARRIVED;
             }
         }
+        return Status.RUNNING;
+    }
+
+    private void beginWaterRecovery(BlockPos origin, long gameTime) {
+        if (terraformProbe != null) {
+            terraformProbe.cancel();
+            terraformProbe = null;
+            terraformProbeGoal = null;
+        }
+        waterRecoveryTarget = origin.above();
+        waterRecoveryDeadline = gameTime + WaterRecovery.RECOVERY_BUDGET_TICKS;
+        core.setExecutionPermit(TerrainPermit.TERRAFORM);
+        core.softCancelIfSafe();
+        plannedCenter = null;
+        searchSatisfied = false;
+        bestGoalH = Double.MAX_VALUE;
+        ticksSincePlan = 0;
+        lastSearchContext = null;
+        Constants.LOG.info("[numen-path] 水中停滞,先垫脚/上浮离水 origin={}", origin.toShortString());
+    }
+
+    private Status tickWaterRecovery(long gameTime) {
+        if (!player.isInWater() && player.onGround()) {
+            return finishWaterRecovery(true, gameTime);
+        }
+        if (gameTime >= waterRecoveryDeadline) {
+            return finishWaterRecovery(false, gameTime);
+        }
+        GoalCompiler.Compiled recovery = GoalCompiler.block(player.level(), waterRecoveryTarget);
+        plannedCenter = recovery.goal().center();
+        withSprintGate(() -> {
+            if (core.getGoal() == null || (core.getCurrent() == null && !core.hasInProgressSearch())) {
+                core.setGoalAndPath(recovery.engineGoal());
+            }
+            core.tick();
+        });
+        if (core.calcFailedLastTick()) {
+            return finishWaterRecovery(false, gameTime);
+        }
+        Goal engineGoal = core.getGoal();
+        if (engineGoal != null && core.getCurrent() == null && !core.hasInProgressSearch()) {
+            BlockPos feet = PathExecutor.playerFeet(player);
+            if (engineGoal.isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
+                if (!player.isInWater() && player.onGround()) {
+                    return finishWaterRecovery(true, gameTime);
+                }
+                BlockPos next = feet.above();
+                if (next.equals(waterRecoveryTarget)) {
+                    return finishWaterRecovery(false, gameTime);
+                }
+                waterRecoveryTarget = next;
+                core.softCancelIfSafe();
+                plannedCenter = null;
+            }
+        }
+        return Status.RUNNING;
+    }
+
+    private Status finishWaterRecovery(boolean success, long gameTime) {
+        if (success) {
+            WaterRecovery.succeed(player.getUUID(), gameTime);
+        } else {
+            WaterRecovery.fail(player.getUUID(), gameTime);
+        }
+        waterRecoveryTarget = null;
+        waterRecoveryDeadline = 0L;
+        core.setExecutionPermit(contextProvider.permit());
+        core.softCancelIfSafe();
+        plannedCenter = null;
+        searchSatisfied = false;
+        bestGoalH = Double.MAX_VALUE;
+        ticksSincePlan = 0;
+        lastSearchContext = null;
+        Constants.LOG.info("[numen-path] 水中恢复结束 success={}", success);
         return Status.RUNNING;
     }
 
@@ -669,6 +772,12 @@ public final class PlayerNav {
     public void stop() {
         stopped = true;
         searchSatisfied = false;
+        if (waterRecoveryTarget != null) {
+            WaterRecovery.fail(player.getUUID(), player.level().getGameTime());
+            waterRecoveryTarget = null;
+            waterRecoveryDeadline = 0L;
+            core.setExecutionPermit(contextProvider.permit());
+        }
         if (terraformProbe != null) {
             terraformProbe.cancel();
             terraformProbe = null;

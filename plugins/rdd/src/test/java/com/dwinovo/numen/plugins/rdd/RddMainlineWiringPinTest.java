@@ -528,6 +528,12 @@ class RddMainlineWiringPinTest {
                         + "若按一级去重，同一一级内的后续二级就再也拿不到开工拍醒 → 阶段卡住");
         assertContains(body, "report_task_concern",
                 "开工拍醒必须给合规出口，否则她只能瞎动或不动");
+        assertContains(body, "主人不在线",
+                "任务链执行必须明确主人不在、完全自主");
+        assertContains(body, "不要向玩家提问",
+                "不得提问或等待玩家确认后停住");
+        assertContains(body, "这是你的职责而不是可选项",
+                "突发/异常/低效必须主动上报，上报是职责");
         assertContains(body, "bodySubmissionEnabled",
                 "身体驱动模式下拍醒 = 双驾驶，必须短路");
         assertContains(methodBody(plugin(), "bindCurrent", "RddSupervisionNotifications.clearKickoff"), "clearNudgeThrottle",

@@ -2,6 +2,7 @@ package com.dwinovo.numen.plugins.rdd;
 
 import com.dwinovo.numen.rdd.api.*;
 import com.dwinovo.numen.rdd.core.*;
+import com.dwinovo.numen.task.WaterRecovery;
 import com.google.gson.Gson;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
@@ -32,6 +33,9 @@ class RddStallWatcherConsumerTest {
             Files.copy(root().resolve("plugins/rdd/src/main/java/com/dwinovo/numen/plugins/rdd/"+name+".java"),file);
             sources.add(file.toString());
         }
+        Path waterRecovery=compiled.resolve("WaterRecovery.java");
+        Files.copy(root().resolve("api/common/src/main/java/com/dwinovo/numen/task/WaterRecovery.java"),waterRecovery);
+        sources.add(waterRecovery.toString());
         for(var e:SEAMS.entrySet()) {
             Path file=compiled.resolve(e.getKey()+".java");
             Files.writeString(file,e.getValue()); sources.add(file.toString());
@@ -51,6 +55,7 @@ class RddStallWatcherConsumerTest {
                         ||name.equals("com.dwinovo.numen.entity.NumenPlayer")
                         ||name.startsWith("com.dwinovo.numen.task.CompanionTickDispatcher")
                         ||name.equals("com.dwinovo.numen.task.TimerRegistry")
+                        ||name.startsWith("com.dwinovo.numen.task.WaterRecovery")
                         ||name.startsWith("com.dwinovo.numen.agent.llm.LlmActivity")) {
                     Class<?> type=findLoadedClass(name);
                     if(type==null)type=findClass(name);
@@ -63,6 +68,8 @@ class RddStallWatcherConsumerTest {
         harness=loader.loadClass(PKG+"StallHarness");
         for(String name:List.of("RddStallWatcher","RddStallPolicy","StallHarness"))
             assertEquals(compiled.toUri().toURL(),loader.loadClass(PKG+name).getProtectionDomain().getCodeSource().getLocation());
+        assertEquals(compiled.toUri().toURL(),loader.loadClass("com.dwinovo.numen.task.WaterRecovery")
+                .getProtectionDomain().getCodeSource().getLocation());
         assertSame(TaskChain.class,loader.loadClass(TaskChain.class.getName()));
     }
     @AfterAll static void closeLoader() throws Exception { if(loader!=null)loader.close(); }
@@ -99,6 +106,39 @@ class RddStallWatcherConsumerTest {
         f.ticks(5,false);
         assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
         assertEquals(1,f.events("subtask_stalled"));
+    }
+    @Test void waterStallRequestsRecoveryInsteadOfSpendingAnotherLlmNudge() throws Exception {
+        var f=new Fixture(true); f.ticks(11,false);
+        int sent=(int)f.call("sent"); f.set("water",true); f.ticks(5,false);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+        assertEquals(1,f.events("water_recovery_requested"));
+        assertEquals(sent,f.call("sent"));
+    }
+    @Test void activeMineStuckInWaterUsesTheSameRecoveryRequest() throws Exception {
+        var f=new Fixture(true); f.set("water",true); f.set("body",true); f.set("tool","mine"); f.drive(121);
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+        assertEquals(1,f.events("water_recovery_requested"));
+    }
+    @Test void successfulWaterEscapeResumesTheOriginalSubtask() throws Exception {
+        var f=new Fixture(true); f.set("water",true); f.drive(16);
+        f.call("waterBegin"); f.call("waterSucceed"); f.call("handle");
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+        assertEquals(1,f.events("water_stall_recovery"));
+        assertEquals(0,f.count());
+    }
+    @Test void pendingWaterRecoveryHoldsTheFailureWindowButTimeoutStillReleasesIt() throws Exception {
+        var f=new Fixture(true); f.set("water",true); f.drive(16);
+        for(int i=0;i<80;i++) f.call("handle");
+        assertEquals(SubtaskStatus.STALLED,f.chain.currentSubtaskStatus());
+        f.set("gameTime",(long)WaterRecovery.RECOVERY_BUDGET_TICKS); f.call("handle");
+        assertEquals(SubtaskStatus.RUNNING,f.chain.currentSubtaskStatus());
+        assertEquals(1,f.events("water_stall_recovery"));
+    }
+    @Test void dryStallKeepsTheExistingNudgePath() throws Exception {
+        var f=new Fixture(true); f.drive(16);
+        assertEquals(0,f.events("water_recovery_requested"));
+        assertEquals(1,f.events("subtask_stalled"));
+        assertTrue((int)f.call("sent")>0);
     }
     @Test void inventoryWalkingDoesNotResetOrRepeatIdleReminder() throws Exception {
         var f=new Fixture(true); f.ticks(11,true);
@@ -307,6 +347,8 @@ class RddStallWatcherConsumerTest {
                 public void track(){owner.track(ap,rt,rt.chain().currentSubtask());}
                 public void progress(){owner.observeProgress(ap,rt,rt.chain().currentSubtask());}
                 public void handle(){owner.handleStalled(ap,rt,rt.chain().currentSubtask());}
+                public void waterBegin(){WaterRecovery.begin(ap.getUUID(),ap.level().getGameTime());}
+                public void waterSucceed(){WaterRecovery.succeed(ap.getUUID(),ap.level().getGameTime());}
                 public int count() throws Exception {
                     var f=RddStallWatcher.class.getDeclaredField("stalls"); f.setAccessible(true);
                     Object st=((Map<?,?>)f.get(owner)).get(ap.getUUID());
@@ -322,6 +364,8 @@ class RddStallWatcherConsumerTest {
                     switch(key){
                         case "inventory" -> ap.getInventory().items.get(0).count=(Integer)value;
                         case "x" -> ap.x=(Integer)value;
+                        case "water" -> ap.inWater=(Boolean)value;
+                        case "gameTime" -> ap.level().gameTime=(Long)value;
                         case "body" -> CompanionTickDispatcher.active=(Boolean)value;
                         case "progress" -> CompanionTickDispatcher.progress=(Integer)value;
                         case "llm" -> LlmActivity.flying=(Boolean)value;
@@ -362,13 +406,18 @@ class RddStallWatcherConsumerTest {
             package com.dwinovo.numen.entity;
             public final class NumenPlayer extends net.minecraft.world.entity.player.Player {
                 private final java.util.UUID id=java.util.UUID.randomUUID();
-                public int x=100,reads; private final Object level=new Object();
-                public Object level(){return level;}
+                public int x=100,reads; public boolean inWater; private final net.minecraft.world.level.Level level=new net.minecraft.world.level.Level();
+                public net.minecraft.world.level.Level level(){return level;}
                 public net.minecraft.world.inventory.AbstractContainerMenu containerMenu,inventoryMenu;
                 public java.util.UUID getUUID(){return id;}
                 public Object getServer(){return this;}
+                public boolean isInWater(){return inWater;}
                 public net.minecraft.core.BlockPos blockPosition(){reads++;return new net.minecraft.core.BlockPos(x,68,100);}
             }
+            """),
+        Map.entry("Level","""
+            package net.minecraft.world.level;
+            public class Level {public long gameTime;public long getGameTime(){return gameTime;}}
             """),
         Map.entry("Player","""
             package net.minecraft.world.entity.player;
@@ -398,6 +447,7 @@ class RddStallWatcherConsumerTest {
             package net.minecraft.core;
             public record BlockPos(int x,int y,int z){
                 public int getX(){return x;}public int getY(){return y;}public int getZ(){return z;}
+                public BlockPos immutable(){return this;}public String toShortString(){return x+","+y+","+z;}
             }
             """),
         Map.entry("AbstractContainerMenu","""

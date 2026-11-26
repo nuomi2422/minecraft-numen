@@ -59,8 +59,8 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
     private final NumenPlayer player;
     private final AimProcessor aim;
     private final BlockDigger digger;
-    /** 这次导航对地形的许可(与搜索/执行上下文同一来源:PlayerNav 的 ContextProvider)。 */
-    private final TerrainPermit permit;
+    /** 水中自救时临时允许改地形，结束后由 PlayerNav 还原原许可。 */
+    private TerrainPermit permit;
     /**
      * 这次导航真挖了什么、真放了什么。执行器是唯一动手的地方,账也只记在这儿:
      * 任务回执末尾如实相告(en route: broke …; placed …),模型事后至少知道自己干过什么。
@@ -89,6 +89,10 @@ public final class ExecHarness implements Movement.ExecutionDelegate {
     @Override
     public TerrainPermit permit() {
         return permit;
+    }
+
+    void setPermit(TerrainPermit permit) {
+        this.permit = permit;
     }
 
     /** 这次导航至今真动过的地形(只读视图;空账 = 一块没动)。 */

@@ -160,6 +160,10 @@ public final class PathingCore {
         return current == null || safeToCancel;
     }
 
+    void setExecutionPermit(TerrainPermit permit) {
+        harness.setPermit(permit);
+    }
+
     /** 本状态机的执行器至今真动过的地形(账本住在执行器里,这里只是递出去)。 */
     public TerrainBill ledger() {
         return harness.ledger();
