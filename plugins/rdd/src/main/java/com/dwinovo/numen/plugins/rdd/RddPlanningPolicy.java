@@ -61,6 +61,8 @@ final class RddPlanningPolicy {
     static final int MAX_SUBTASKS_PER_PRIMARY = 8;
     private static final Pattern PRIMARY_SUBTASK_LIMIT = Pattern.compile(
             "每个一级(?:目标)?(?:最多|至多|不超过)\\s*(\\d+)\\s*个二级(?:步骤|子步骤|任务)?");
+    private static final Pattern FIRST_PRIMARY_SUBTASK_COUNT = Pattern.compile(
+            "一级0只能(?:且必须)?生成\\s*(\\d+)\\s*个二级步骤");
 
     private RddPlanningPolicy() {}
 
@@ -77,6 +79,30 @@ final class RddPlanningPolicy {
         } catch (NumberFormatException ex) {
             return MAX_SUBTASKS_PER_PRIMARY;
         }
+    }
+
+    static int firstPrimarySubtaskCount(String objective) {
+        if (objective == null || objective.isBlank()) {
+            return 0;
+        }
+        Matcher matcher = FIRST_PRIMARY_SUBTASK_COUNT.matcher(objective);
+        if (!matcher.find()) {
+            return 0;
+        }
+        try {
+            return Math.clamp(Integer.parseInt(matcher.group(1)), 1, MAX_SUBTASKS_PER_PRIMARY);
+        } catch (NumberFormatException ex) {
+            return 0;
+        }
+    }
+
+    static String firstPrimarySubtaskInstruction(String objective) {
+        int count = firstPrimarySubtaskCount(objective);
+        if (count == 0) {
+            return "";
+        }
+        return "- 一级0硬约束：只能且必须生成恰好 " + count + " 个二级步骤；"
+                + "不得增加工具/食物/装备前置，数量不符的整批会被拒绝。\n";
     }
 
     static String subtaskLimitInstruction(String objective) {
@@ -191,6 +217,7 @@ final class RddPlanningPolicy {
         sb.append("- 每步可验收：condition 必须给真实 asset_key + minimum，或可核对的世界事实；")
                 .append("禁止把\"找村庄/四处探索/变强一些\"当作可验收终点，不得为凑完整而无限拆分。\n");
         sb.append(subtaskLimitInstruction(objective));
+        sb.append(firstPrimarySubtaskInstruction(objective));
 
         // 4) 高风险
         List<String> risks = riskKinds(objective, stage);
@@ -225,6 +252,10 @@ final class RddPlanningPolicy {
         int subtaskLimit = maxSubtasksPerPrimary(objective);
         if (subtaskLimit < MAX_SUBTASKS_PER_PRIMARY) {
             rules.add("primary-subtask-limit:" + subtaskLimit);
+        }
+        int firstPrimaryCount = firstPrimarySubtaskCount(objective);
+        if (firstPrimaryCount > 0) {
+            rules.add("first-primary-subtask-count:" + firstPrimaryCount);
         }
         for (String risk : riskKinds(objective, stage)) {
             rules.add("risk:" + risk);

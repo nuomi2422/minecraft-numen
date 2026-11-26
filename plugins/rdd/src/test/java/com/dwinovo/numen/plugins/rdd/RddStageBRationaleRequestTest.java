@@ -127,13 +127,16 @@ class RddStageBRationaleRequestTest {
     @Test
     void acceptedPrimarySubtaskLimitReachesTheRealStageBRequest() {
         TaskChain owner = owner("fixture-only limited theme",
-                "fixture-only objective: 每个一级最多4个二级步骤；后续按前置展开");
+                "fixture-only objective: 每个一级最多4个二级步骤；一级0只能且必须生成1个二级步骤；后续按前置展开");
         List<String> sent = dispatch(owner, owner.planRevision(), owner.currentPrimary().description(),
                 new AtomicReference<>(owner), (id, theme, stage, failures) -> KNOWLEDGE);
         assertEquals(1, sent.size());
         assertTrue(sent.getFirst().contains("## 当前一级的步骤数量上限"));
         assertTrue(sent.getFirst().contains("每个一级最多 4 个二级步骤"));
+        assertTrue(sent.getFirst().contains("每个一级最多 4 个二级步骤"));
         assertTrue(sent.getFirst().contains("超限整批会被拒绝"));
+        assertTrue(sent.getFirst().contains("恰好 1 个二级步骤"));
+        assertTrue(sent.getFirst().contains("数量不符的整批会被拒绝"));
     }
 
     @Test

@@ -127,6 +127,16 @@ class RddPlanningPolicyTest {
     }
 
     @Test
+    void 一级0只能一个二级的硬约束进入策略与观测() {
+        String objective = "一级0只能且必须生成1个二级步骤；不得生成火把或工具前置";
+        assertEquals(1, RddPlanningPolicy.firstPrimarySubtaskCount(objective));
+        assertEquals(0, RddPlanningPolicy.firstPrimarySubtaskCount("每个一级最多4个二级步骤"));
+        assertTrue(RddPlanningPolicy.block(objective, "stage_a").contains("恰好 1 个二级步骤"));
+        assertTrue(RddPlanningPolicy.appliedRules(objective, "stage_a")
+                .contains("first-primary-subtask-count:1"));
+    }
+
+    @Test
     void stage_a最终请求含策略约束() {
         String base = RddStagePlanner.planningPrompt("通关MC", Map.of("minecraft:iron_pickaxe", 1));
 

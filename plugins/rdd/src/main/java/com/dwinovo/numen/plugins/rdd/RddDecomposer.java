@@ -444,7 +444,15 @@ final class RddDecomposer {
 
     static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded,
                                              String objective, int maxSubtasks) {
+        return stageBPublished(parsed, guarded, objective, maxSubtasks, 0);
+    }
+
+    static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded,
+                                             String objective, int maxSubtasks, int firstPrimarySubtaskCount) {
         if (parsed.specs().size() > Math.clamp(maxSubtasks, 1, RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY)) {
+            return List.of();
+        }
+        if (firstPrimarySubtaskCount > 0 && parsed.specs().size() != firstPrimarySubtaskCount) {
             return List.of();
         }
         boolean optionalAllowed = RddPlanningPolicy.optionalAllowed(objective);
@@ -458,6 +466,14 @@ final class RddDecomposer {
             }
         }
         return guarded.allowed();
+    }
+
+    private static boolean isFirstPrimary(TaskChain owner) {
+        if (owner == null || owner.currentPrimary() == null) {
+            return false;
+        }
+        var primaries = owner.goal().primaryGoals();
+        return !primaries.isEmpty() && owner.currentPrimary().id().equals(primaries.get(0).id());
     }
 
     /** The caller already owns the theme: carry that exact chain/revision, never infer it later. */
@@ -474,6 +490,8 @@ final class RddDecomposer {
         var miningContext = RddMiningCapabilityCheck.capture(companionId);
         int maxSubtasks = owner == null ? RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY
                 : RddPlanningPolicy.maxSubtasksPerPrimary(owner.goal().description());
+        int firstPrimarySubtaskCount = isFirstPrimary(owner)
+                ? RddPlanningPolicy.firstPrimarySubtaskCount(owner.goal().description()) : 0;
         dispatchStageB(companionId, themeObjective, owner, ownerRevision, attempt, completedStages, extraHint,
                 snapshot, knownFailures, RddPlanningKnowledge.HOST,
                 () -> {
@@ -487,7 +505,7 @@ final class RddDecomposer {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
                                 guarded.dropped(), guarded.reused());
-                        done.accept(stageBPublished(parsed, guarded, themeObjective, maxSubtasks));
+                        done.accept(stageBPublished(parsed, guarded, themeObjective, maxSubtasks, firstPrimarySubtaskCount));
                     });
                 },
                 () -> done.accept(List.of())));
@@ -503,6 +521,8 @@ final class RddDecomposer {
         var miningContext = RddMiningCapabilityCheck.capture(companionId);
         int maxSubtasks = owner == null ? RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY
                 : RddPlanningPolicy.maxSubtasksPerPrimary(owner.goal().description());
+        int firstPrimarySubtaskCount = isFirstPrimary(owner)
+                ? RddPlanningPolicy.firstPrimarySubtaskCount(owner.goal().description()) : 0;
         String reviewHint = hint + "\n\nConcern review ref=" + concernRef
                 + "\nReturn concern_review with this exact ref, a proposal, reason and basis. "
                 + "A proposal is not host verification. If evidence is missing use DEFERRED and an actionable resume_condition.";
@@ -516,7 +536,7 @@ final class RddDecomposer {
                             theme, snapshot.availableCounts(), guarded -> {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(theme, "stage_b"), guarded.dropped(), guarded.reused());
-                        done.accept(new ConcernPlan(stageBPublished(parsed, guarded, theme, maxSubtasks), proposal));
+                        done.accept(new ConcernPlan(stageBPublished(parsed, guarded, theme, maxSubtasks, firstPrimarySubtaskCount), proposal));
                     });
                 }, () -> done.accept(new ConcernPlan(List.of(), null))));
     }
@@ -573,6 +593,12 @@ final class RddDecomposer {
             String limitInstruction = RddPlanningPolicy.subtaskLimitInstruction(owner.goal().description());
             if (!limitInstruction.isBlank()) {
                 userContent += "\n\n## 当前一级的步骤数量上限\n" + limitInstruction;
+            }
+            if (isFirstPrimary(owner)) {
+                String firstInstruction = RddPlanningPolicy.firstPrimarySubtaskInstruction(owner.goal().description());
+                if (!firstInstruction.isBlank()) {
+                    userContent += "\n\n## 一级0的硬性步骤数量\n" + firstInstruction;
+                }
             }
         }
         send.accept(stageBRequestContent(userContent, rationale));

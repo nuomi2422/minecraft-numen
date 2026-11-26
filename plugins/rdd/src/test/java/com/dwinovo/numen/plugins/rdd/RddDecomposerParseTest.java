@@ -563,6 +563,10 @@ class RddDecomposerParseTest {
                 "the accepted per-primary limit rejects the whole batch");
         assertEquals(5, RddDecomposer.stageBPublished(parsed, filtered, "立足开局", 5).size(),
                 "the exact accepted limit remains complete");
+        assertTrue(RddDecomposer.stageBPublished(parsed, filtered, "立足开局", 5, 1).isEmpty(),
+                "an explicit first-primary count rejects a different batch size");
+        assertEquals(5, RddDecomposer.stageBPublished(parsed, filtered, "立足开局", 5, 5).size(),
+                "the exact first-primary count remains complete");
     }
 
     // ---------- 2026-11-17 V02：必需丢弃后走真实共享空恢复，不装木材前缀 ----------
