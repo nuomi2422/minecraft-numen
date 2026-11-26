@@ -83,4 +83,14 @@ class ProviderRegistryTest {
         assertNotNull(ProviderRegistry.model("opencode-go", "deepseek-v4-flash"));
         assertEquals(1000000, ProviderRegistry.contextWindow("opencode-go", "deepseek-v4.1-flash"));
     }
+
+    @Test
+    void hy4FlashUsesItsRealContextAndReplayBudget() {
+        var model = ProviderRegistry.model("opencode-go", "hy4-flash-free");
+        assertNotNull(model);
+        assertEquals(1000000, model.ctx());
+        assertEquals(50000, model.maxTokens());
+        assertEquals(200000, ProviderRegistry.replayWindowTokens("opencode-go", "hy4-flash-free"));
+        assertFalse(model.reasoning());
+    }
 }
