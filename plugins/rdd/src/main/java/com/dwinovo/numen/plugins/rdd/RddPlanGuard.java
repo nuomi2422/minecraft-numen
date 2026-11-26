@@ -80,7 +80,7 @@ final class RddPlanGuard {
         boolean inventoryIntent = backpackIntent(d);
         boolean worldCondition = c.containsKey("block")
                 || (c.get("type") instanceof String t && t.contains("block"));
-        boolean acquireIntent = d.matches(".*(?:取得|采集|收集|获得|拿到).*")
+        boolean acquireIntent = d.replace("已取得", "").matches(".*(?:取得|采集|收集|获得|拿到).*")
                 && !d.matches(".*(?:确认|检查|记录).*(?:可取|存在|位置).*");
         boolean existenceOnly = "block_nearby".equals(String.valueOf(c.get("type")))
                 || "container_nearby".equals(String.valueOf(c.get("type")));

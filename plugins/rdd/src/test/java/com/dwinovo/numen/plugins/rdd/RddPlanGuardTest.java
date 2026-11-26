@@ -204,6 +204,9 @@ class RddPlanGuardTest {
         SubtaskSpec check = worldScout("检查村庄附近是否存在可取木料，只记录位置",
                 "block_nearby", "#minecraft:logs", 16);
         assertTrue(RddPlanGuard.predicateGaps(check).isEmpty(), RddPlanGuard.predicateGaps(check).toString());
+        SubtaskSpec already = worldScout("确认已取得食物并记录附近箱子现状",
+                "container_nearby", "minecraft:bread", 8);
+        assertTrue(RddPlanGuard.predicateGaps(already).isEmpty(), RddPlanGuard.predicateGaps(already).toString());
     }
 
     @Test
