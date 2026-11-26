@@ -302,7 +302,7 @@ final class RddPlanGuard {
         }
         for (Map.Entry<String, String> e : TOOL_WORDS.entrySet()) {
             // 只把「用<工具>」当作"这一步真的要用它"；只是提到名字（例如"做木镐"、"石镐 3 个"）不算。
-            if (!d.contains("用" + e.getKey())) continue;
+            if (!d.replace("可用" + e.getKey(), "").contains("用" + e.getKey())) continue;
             if (producing) continue;
             int have = held.getOrDefault(e.getValue(), 0);
             if (have <= 0) gaps.add(e.getKey());

@@ -101,6 +101,17 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 可用世界熔炉不要求背包携带熔炉() {
+        SubtaskSpec check = new SubtaskSpec("确认床边可用熔炉和燃料",
+                Map.of("type", "block_nearby", "block", "minecraft:furnace", "radius", 8), null);
+        assertTrue(RddPlanGuard.toolGaps(check, Map.of()).isEmpty(),
+                RddPlanGuard.toolGaps(check, Map.of()).toString());
+        SubtaskSpec use = new SubtaskSpec("用熔炉烧炼raw_iron",
+                Map.of("asset_key", "minecraft:iron_ingot", "minimum", 1), null);
+        assertTrue(RddPlanGuard.toolGaps(use, Map.of()).contains("熔炉"));
+    }
+
+    @Test
     void 描述是制作工具时不算缺() {
         SubtaskSpec s = new SubtaskSpec("合成一把铁镐",
                 Map.of("asset_key", "minecraft:iron_pickaxe", "minimum", 1), null);
