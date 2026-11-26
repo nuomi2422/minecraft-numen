@@ -29,7 +29,7 @@ final class RddConcernTool implements NumenTool {
                 "COUNTER=做不到或成本过高, 附 reason + suggestion(替代方案); " +
                 "PAUSE=这件事现在做不了但先别废掉(留着以后开), 附 reason, 不要用 COUNTER 代替。" +
                 "当你认为当前 current_task 不合理/不可达/与目标不符时, 用它上报, 不要默默无视。" +
-                "选择依据: 你能想到**别的做法**就用 COUNTER; " +
+                "选择依据: 你能想到**别的做法**就用 COUNTER; 即使误选 PAUSE, 只要 suggestion 给出可行替代, 宿主也会立即转协商重规划; " +
                 "你**根本做不到且短期也不会变**(例如要求去 300 格外的地方、要求在末地拿东西)" +
                 "就用 PAUSE——COUNTER 会让指挥官换计划并继续消耗你的重试预算, 而 PAUSE 只是把它按住。" +
                 "rdd_status 的 concern_review 表示未核前提；只有当前负责人取得相关新观察或明确动作后, " +

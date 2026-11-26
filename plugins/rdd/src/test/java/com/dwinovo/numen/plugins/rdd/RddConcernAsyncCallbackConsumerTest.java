@@ -247,6 +247,16 @@ public class RddConcernAsyncCallbackConsumerTest {
         assertFalse(JsonParser.parseString(host.requestReview(ref, "new owner checked route; needs planner judgment")).getAsJsonObject().get("success").getAsBoolean());
         assertEquals(2, host.plannerCalls()); assertEquals(2, host.negotiationBudgetUsed());
     }
+    @Test void actionablePauseReplansInsteadOfParking() {
+        retrySameStep(); host.negotiate();
+        report("PAUSE", FRESH, "mine and smelt iron first, then return for the backup set");
+        host.negotiate();
+        assertEquals(PrimaryGoalStatus.REPLANNING, chain.primaryStatus());
+        assertEquals(2, host.plannerCalls());
+        assertEquals(2, host.negotiationBudgetUsed());
+        assertFalse(host.reasons("subtask_paused").contains(FRESH),
+                "an actionable alternative must not park the current step");
+    }
     @Test void freshControlStillPausesWhileOldReviewRetained() {
         retrySameStep(); host.negotiate();
         String ref = (String)host.review().get("concern_ref");

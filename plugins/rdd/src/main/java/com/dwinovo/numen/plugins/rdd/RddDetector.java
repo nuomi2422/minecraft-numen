@@ -299,13 +299,10 @@ final class RddDetector {
     }
 
     /**
-     * 暂停多久强制复评：60 秒。
-     *
-     * <p>够她真的去试一条替代路线（跑一趟、问一次军师），又不会让一个做不了的目标
-     * 无限期挂着占住整条链。实机 2026-09-30 两次 PAUSE 都因为"没人会把它开回来"卡死，
-     * 这条就是兜底闸。
+     * 无替代建议的真实阻塞最多暂停 10 分钟；带可行建议的 PAUSE 在协商入口直接重规划。
+     * 主人暂停仍永不过期，士兵暂停不得无限期占住整条链。
      */
-    private static final long PAUSE_RECHECK_TICKS = 60L * 20L;
+    private static final long PAUSE_RECHECK_TICKS = 600L * 20L;
 
     /**
      * 背包里是否<b>把这一批死亡掉落真的捡回来了</b>（死亡支线完成判据，F6）。
@@ -817,13 +814,16 @@ final class RddDetector {
         //   关掉后 PAUSE 回执**落到下面的普通重规划路径**（= 当作 COUNTER 处理），
         //   至少不会把链按住不动。删掉 flag 即恢复。运行时生效，不用重编。
         boolean pauseOff = !RddPlugin.pauseEnabled();
-        if (n.isPauseRequest() && pauseOff) {
+        boolean actionablePause = n.isPauseRequest() && n.hasSuggestion();
+        if (n.isPauseRequest() && (pauseOff || actionablePause)) {
             RddMonitor.publish("pause_skipped_disabled", Map.of(
                     "companionId", ap.getUUID().toString(),
                     "reason", n.reason(), "suggestion", n.suggestion(),
-                    "note", "rdd-pause-disabled.flag exists; PAUSE handled as a plain replan request"));
+                    "note", pauseOff
+                            ? "rdd-pause-disabled.flag exists; PAUSE handled as a plain replan request"
+                            : "PAUSE carried an actionable alternative; negotiating instead of parking"));
         }
-        if (n.isPauseRequest() && !pauseOff) {
+        if (n.isPauseRequest() && !pauseOff && !actionablePause) {
                 RddPlugin.clearBody(ap.getUUID());
                 // 已经在暂停中（士兵又报了一次 PAUSE）：不是错误，别再走一遍按停逻辑，
                 // 更别把它当失败。刷新一下起点，让复评预算从这次上报重新算。
