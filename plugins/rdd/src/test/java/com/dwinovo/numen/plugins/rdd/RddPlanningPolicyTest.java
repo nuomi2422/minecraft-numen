@@ -163,7 +163,11 @@ class RddPlanningPolicyTest {
                 java.util.Map.of("type", "container_nearby", "radius", 8), null);
         var stale = new com.dwinovo.numen.rdd.api.SubtaskSpec("返回旧基地(10728,64,9500)",
                 java.util.Map.of("type", "container_nearby", "radius", 8), null);
+        var negated = new com.dwinovo.numen.rdd.api.SubtaskSpec("在当前村庄核对，不引用旧基地",
+                java.util.Map.of("type", "container_nearby", "radius", 8), null);
         assertTrue(RddPlanningPolicy.routeAllowed(List.of(nearby), objective, 1));
+        assertTrue(RddPlanningPolicy.routeAllowed(List.of(negated), objective, 1),
+                "a prohibition on stale bases is not a stale-base action");
         assertFalse(RddPlanningPolicy.routeAllowed(List.of(stale), objective, 1));
         assertTrue(RddPlanningPolicy.routeAllowed(List.of(stale), objective, 6));
     }

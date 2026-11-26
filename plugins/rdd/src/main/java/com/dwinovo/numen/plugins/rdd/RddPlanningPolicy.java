@@ -71,6 +71,8 @@ final class RddPlanningPolicy {
             "(?:坐标|中心)\\s*(-?\\d{1,7})\\s*[,，]\\s*(-?\\d{1,7})\\s*(?:周围|半径)\\s*(\\d{1,4})\\s*格");
     private static final Pattern DESCRIPTION_COORDINATES = Pattern.compile(
             "(-?\\d{3,7})\\s*[,，]\\s*(-?\\d{3,7})");
+    private static final Pattern DESCRIPTION_TRIPLE_COORDINATES = Pattern.compile(
+            "(-?\\d{3,7})\\s*[,，]\\s*(-?\\d{1,3})\\s*[,，]\\s*(-?\\d{3,7})");
 
     record RouteConstraint(int lastPrimaryIndex, int x, int z, int radius) {}
 
@@ -134,12 +136,18 @@ final class RddPlanningPolicy {
         if (route == null || primaryIndex < 0 || primaryIndex > route.lastPrimaryIndex()) return true;
         for (SubtaskSpec spec : specs) {
             String description = spec.description();
-            if (description.contains("旧基地") || description.contains("历史基地") || description.contains("历史观测")) {
+            if (staleBaseMention(description)) {
                 return false;
             }
             Matcher coordinates = DESCRIPTION_COORDINATES.matcher(description);
             while (coordinates.find()) {
                 if (!withinRoute(route, Integer.parseInt(coordinates.group(1)), Integer.parseInt(coordinates.group(2)))) {
+                    return false;
+                }
+            }
+            Matcher triple = DESCRIPTION_TRIPLE_COORDINATES.matcher(description);
+            while (triple.find()) {
+                if (!withinRoute(route, Integer.parseInt(triple.group(1)), Integer.parseInt(triple.group(3)))) {
                     return false;
                 }
             }
@@ -151,6 +159,23 @@ final class RddPlanningPolicy {
             }
         }
         return true;
+    }
+
+    private static boolean staleBaseMention(String description) {
+        for (String clause : description.split("[，。；,;、\\n]")) {
+            int target = Integer.MAX_VALUE;
+            for (String word : List.of("旧基地", "历史基地")) {
+                int index = clause.indexOf(word);
+                if (index >= 0) target = Math.min(target, index);
+            }
+            if (target == Integer.MAX_VALUE) continue;
+            String before = clause.substring(0, target);
+            if (!before.contains("不") && !before.contains("禁止") && !before.contains("拒绝")
+                    && !before.contains("无需") && !before.contains("不要")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean withinRoute(RouteConstraint route, int x, int z) {

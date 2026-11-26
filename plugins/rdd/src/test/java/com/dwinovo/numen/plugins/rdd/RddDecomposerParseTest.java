@@ -618,6 +618,18 @@ class RddDecomposerParseTest {
                 "later backup-base stage may name a distant coordinate");
     }
 
+    @Test void negatedStaleBaseWordingDoesNotRejectCurrentVillagePlan() {
+        String objective = "路线硬约束：一级0至一级2只允许坐标20784,9904周围96格；不得引用旧基地。";
+        String json = """
+                {"subtasks":[{"description":"在当前村庄睡床并核验重生点，不能引用旧基地",
+                "condition":{"type":"base","dimension":"minecraft:overworld"}}]}
+                """;
+        var parsed = RddStageBSpecParser.parseDetailed(json);
+        var filtered = RddPlanGuard.filterSubtasks(RddPlanGuard.normalizeConditions(parsed.specs()),
+                objective, java.util.Map.of());
+        assertEquals(1, RddDecomposer.stageBPublished(parsed, filtered, objective, 4, 0, 1).size());
+    }
+
     @Test void earlyRouteBoundRejectsConditionCoordinatesOutsideVillage() {
         String objective = "路线硬约束：一级0至一级2只允许坐标20784,9904周围96格";
         String json = """
