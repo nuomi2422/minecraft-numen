@@ -228,9 +228,10 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
             loot.rememberPreexisting(BlockPos.containing(lastTargetPosition));
         }
         // 攻击与移动<b>正交</b>:每刻先问一次"冷却好了吗、够得着谁吗",够得着就打 ——
-        // 不管这一刻在靠近、在拉开、还是站着。攻击不影响寻路,最多让她回个头。
+        // 逃跑时只顺手砍眼前一刀,不转头、不停疾跑,也不改逃跑输入。
+        boolean fleeing = move.action() == AttackPlan.Action.DISENGAGE;
         tickShield();
-        tickWeapon(field);
+        tickWeapon(field, fleeing);
         if (move.action() != AttackPlan.Action.DISENGAGE && haven != null) {
             haven = null;   // 不再逃跑了:落点作废,下次要跑再重新挑
             stopNav();
@@ -605,8 +606,9 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
      * 实测她躲的时候一刀不还。
      *
      * @param field 这一刻的局面,复用 onTick 已经扫好的那份
+     * @param fleeing 是否正在脱离接触;逃跑攻击必须完整保留逃生输入
      */
-    private void tickWeapon(Battlefield field) {
+    private void tickWeapon(Battlefield field, boolean fleeing) {
         if (player.isUsingItem() && !shieldRaised()) {
             return;   // 正在拉弓或吃东西,别打断
         }
@@ -645,10 +647,20 @@ public final class AttackCompanionTask extends AbstractCompanionTask<AttackTaskR
                 player.getAttackStrengthScale(0.0f))) {
             return;
         }
-        InputDriver.lookAt(player, victim.getEyePosition());
-        // 疾跑会让原版取消暴击判定(Player.attack 里 flag1 带 !isSprinting)。
-        player.setSprinting(false);
-        player.attack(victim);
+        if (fleeing) {
+            float escapeXxa = player.xxa;
+            float escapeZza = player.zza;
+            boolean escapeSprinting = player.isSprinting();
+            player.attack(victim);
+            player.xxa = escapeXxa;
+            player.zza = escapeZza;
+            player.setSprinting(escapeSprinting);
+        } else {
+            InputDriver.lookAt(player, victim.getEyePosition());
+            // 疾跑会让原版取消暴击判定(Player.attack 里 flag1 带 !isSprinting)。
+            player.setSprinting(false);
+            player.attack(victim);
+        }
         player.swing(InteractionHand.MAIN_HAND);
         r.strike(victim.getId());
     }

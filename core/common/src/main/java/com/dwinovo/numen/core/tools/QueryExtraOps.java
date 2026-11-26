@@ -1,6 +1,8 @@
 package com.dwinovo.numen.core.tools;
 
 import com.dwinovo.numen.agent.tool.ToolArgs;
+import com.dwinovo.numen.core.combat.Menace;
+import com.dwinovo.numen.core.combat.ThreatFacts;
 import com.dwinovo.numen.entity.NumenPlayer;
 import com.dwinovo.numen.platform.Services;
 import com.dwinovo.numen.task.TaskResult;
@@ -10,6 +12,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
@@ -27,12 +30,16 @@ import net.minecraft.world.item.crafting.SmithingRecipeInput;
 import net.minecraft.world.item.crafting.StonecutterRecipe;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /**
@@ -44,6 +51,7 @@ public final class QueryExtraOps {
     // ---- scan_nearby_entities ----
 
     private static final int MAX_RESULTS = 20;
+    private static final int MAX_RAY_POSITIONS = 32;
     private static final double MIN_RADIUS = 1.0;
     private static final double MAX_RADIUS = 64.0;
 
@@ -87,6 +95,32 @@ String type_filter,
             if (s.entity instanceof LivingEntity le) {
                 o.addProperty("hp", le.getHealth());
                 o.addProperty("max_hp", le.getMaxHealth());
+                o.addProperty("armor", le.getArmorValue());
+                JsonObject equipment = new JsonObject();
+                addEquipment(equipment, EquipmentSlot.MAINHAND, le);
+                addEquipment(equipment, EquipmentSlot.OFFHAND, le);
+                addEquipment(equipment, EquipmentSlot.HEAD, le);
+                addEquipment(equipment, EquipmentSlot.CHEST, le);
+                addEquipment(equipment, EquipmentSlot.LEGS, le);
+                addEquipment(equipment, EquipmentSlot.FEET, le);
+                o.add("equipment", equipment);
+
+                boolean targeting = le instanceof net.minecraft.world.entity.Mob mob
+                        && mob.getTarget() == self;
+                boolean hostile = Menace.hostile(le) || targeting;
+                boolean explosive = Menace.explodes(le);
+                boolean armed = Menace.armed(le);
+                boolean lineOfSight = self.hasLineOfSight(le);
+                int solidBlocks = countSolidBlocks(
+                        blockPos -> self.level().getBlockState(blockPos).isSolid(),
+                        self.getEyePosition(), le.getEyePosition());
+                double dangerRadius = Menace.dangerRadius(le, self);
+                o.addProperty("targeting", targeting);
+                o.addProperty("line_of_sight", lineOfSight);
+                o.addProperty("solid_blocks_between", solidBlocks);
+                o.addProperty("threat", ThreatFacts.classify(
+                        hostile, targeting, explosive, armed, lineOfSight, solidBlocks,
+                        self.distanceToSqr(le), dangerRadius * dangerRadius).name());
             }
             entities.add(o);
         }
@@ -102,7 +136,9 @@ String type_filter,
         //   所以在**需要的那一刻**把下一步塞进回执里（tool_result 是即时通道，不依赖检索）。
         if (!matched.isEmpty()) {
             root.addProperty("hint",
-                    "要打其中某个：attack(entity_ids=[它的 id])（attack 会自己决定靠近砍还是拉弓射）；"
+                    "先看 threat 和 line_of_sight：IMMEDIATE 才需立即应对；OCCLUDED 表示有威胁但被墙挡，"
+                            + "REMOTE 不要仅凭数量冲锋；solid_blocks_between 是射线上的实心方块数（最多计 32 个）。"
+                            + "要打其中某个：attack(entity_ids=[它的 id])（attack 会自己决定靠近砍还是拉弓射）；"
                             + "id 每帧可能变，扫完就立刻打，不要隔回合再用旧 id。");
         }
         return root.toString();
@@ -117,6 +153,72 @@ String type_filter,
     private static boolean matches(String filter, String category) {
         if ("all".equals(filter)) return true;
         return filter.equals(category);
+    }
+
+    private static void addEquipment(JsonObject equipment, EquipmentSlot slot, LivingEntity entity) {
+        ItemStack stack = entity.getItemBySlot(slot);
+        if (!stack.isEmpty()) {
+            equipment.addProperty(slot.getName(), BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+        }
+    }
+
+    /**
+     * Grid DDA along one eye-to-eye segment, never a volume scan. At most 32 distinct block
+     * positions are inspected per entity; vanilla line-of-sight remains authoritative for cover.
+     */
+    static int countSolidBlocks(Predicate<BlockPos> solid, Vec3 start, Vec3 end) {
+        BlockPos startPos = BlockPos.containing(start);
+        BlockPos endPos = BlockPos.containing(end);
+        if (startPos.equals(endPos)) {
+            return 0;
+        }
+
+        double dx = end.x - start.x;
+        double dy = end.y - start.y;
+        double dz = end.z - start.z;
+        int stepX = Double.compare(dx, 0.0);
+        int stepY = Double.compare(dy, 0.0);
+        int stepZ = Double.compare(dz, 0.0);
+        double tMaxX = stepX > 0 ? (startPos.getX() + 1 - start.x) / dx
+                : stepX < 0 ? (start.x - startPos.getX()) / -dx : Double.POSITIVE_INFINITY;
+        double tMaxY = stepY > 0 ? (startPos.getY() + 1 - start.y) / dy
+                : stepY < 0 ? (start.y - startPos.getY()) / -dy : Double.POSITIVE_INFINITY;
+        double tMaxZ = stepZ > 0 ? (startPos.getZ() + 1 - start.z) / dz
+                : stepZ < 0 ? (start.z - startPos.getZ()) / -dz : Double.POSITIVE_INFINITY;
+        double tDeltaX = stepX == 0 ? Double.POSITIVE_INFINITY : 1.0 / Math.abs(dx);
+        double tDeltaY = stepY == 0 ? Double.POSITIVE_INFINITY : 1.0 / Math.abs(dy);
+        double tDeltaZ = stepZ == 0 ? Double.POSITIVE_INFINITY : 1.0 / Math.abs(dz);
+
+        Set<BlockPos> visited = new HashSet<>(MAX_RAY_POSITIONS * 2);
+        BlockPos pos = startPos;
+        while (visited.size() < MAX_RAY_POSITIONS) {
+            visited.add(pos.immutable());
+            if (pos.equals(endPos)) {
+                break;
+            }
+            if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+                pos = pos.relative(net.minecraft.core.Direction.EAST, stepX);
+                tMaxX += tDeltaX;
+            } else if (tMaxY < tMaxZ) {
+                pos = pos.relative(net.minecraft.core.Direction.UP, stepY);
+                tMaxY += tDeltaY;
+            } else {
+                pos = pos.relative(net.minecraft.core.Direction.SOUTH, stepZ);
+                tMaxZ += tDeltaZ;
+            }
+            double nextT = Math.min(tMaxX, Math.min(tMaxY, tMaxZ));
+            if (nextT > 1.0 && !pos.equals(endPos)) {
+                break;
+            }
+        }
+        int solids = 0;
+        for (BlockPos checked : visited) {
+            // Do not blame the block containing our own eyes (e.g. a slab we are standing in).
+            if (!checked.equals(startPos) && solid.test(checked)) {
+                solids++;
+            }
+        }
+        return solids;
     }
 
     private record ScoredEntity(Entity entity, String category, double distance) {}
