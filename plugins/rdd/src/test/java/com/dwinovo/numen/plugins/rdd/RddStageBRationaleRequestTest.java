@@ -125,6 +125,34 @@ class RddStageBRationaleRequestTest {
     }
 
     @Test
+    void acceptedPrimarySubtaskLimitReachesTheRealStageBRequest() {
+        TaskChain owner = owner("fixture-only limited theme",
+                "fixture-only objective: 每个一级最多4个二级步骤；后续按前置展开");
+        List<String> sent = dispatch(owner, owner.planRevision(), owner.currentPrimary().description(),
+                new AtomicReference<>(owner), (id, theme, stage, failures) -> KNOWLEDGE);
+        assertEquals(1, sent.size());
+        assertTrue(sent.getFirst().contains("## 当前一级的步骤数量上限"));
+        assertTrue(sent.getFirst().contains("每个一级最多 4 个二级步骤"));
+        assertTrue(sent.getFirst().contains("超限整批会被拒绝"));
+    }
+
+    @Test
+    void replacedOwnerCannotBorrowTheOldObjectivesSubtaskLimit() {
+        TaskChain owner = owner("fixture-only old limited theme",
+                "fixture-only old objective: 每个一级最多4个二级步骤");
+        TaskChain replacement = owner("fixture-only replacement unlimited theme", "fixture-only replacement objective");
+        AtomicReference<TaskChain> live = new AtomicReference<>(owner);
+        List<String> sent = dispatch(owner, owner.planRevision(), owner.currentPrimary().description(), live,
+                (id, theme, stage, failures) -> {
+                    live.set(replacement);
+                    return KNOWLEDGE;
+                });
+        assertEquals(1, sent.size());
+        assertFalse(sent.getFirst().contains("每个一级最多 4 个二级步骤"));
+        assertNoReason(sent.getFirst());
+    }
+
+    @Test
     void providerReplacingRuntimeCannotPairOldThemeWithNewChainReason() {
         TaskChain owner = owner("fixture-only OLD_THEME");
         long revision = owner.planRevision();
@@ -351,8 +379,12 @@ class RddStageBRationaleRequestTest {
     }
 
     private TaskChain owner(String theme) {
+        return owner(theme, theme);
+    }
+
+    private TaskChain owner(String theme, String objective) {
         // Deliberately identical goal/primary IDs: only chain instance and revision establish ownership.
-        return new TaskChain(new Goal("fixture-goal", theme,
+        return new TaskChain(new Goal("fixture-goal", objective,
                 List.of(PrimaryGoal.unexpanded("fixture-primary", theme, List.of()))));
     }
 

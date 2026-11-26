@@ -5,6 +5,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 任务链规划策略（纯逻辑，零 MC 依赖，可单测）：<b>最小有效目标 + 成本/风险约束</b>。
@@ -56,7 +58,35 @@ final class RddPlanningPolicy {
     private static final List<String> RISK_NETHER = List.of("下界", "烈焰", "要塞", "抗火");
     private static final List<String> RISK_END = List.of("末地", "末影", "传送门", "末影龙");
 
+    static final int MAX_SUBTASKS_PER_PRIMARY = 8;
+    private static final Pattern PRIMARY_SUBTASK_LIMIT = Pattern.compile(
+            "每个一级(?:目标)?(?:最多|至多|不超过)\\s*(\\d+)\\s*个二级(?:步骤|子步骤|任务)?");
+
     private RddPlanningPolicy() {}
+
+    static int maxSubtasksPerPrimary(String objective) {
+        if (objective == null || objective.isBlank()) {
+            return MAX_SUBTASKS_PER_PRIMARY;
+        }
+        Matcher matcher = PRIMARY_SUBTASK_LIMIT.matcher(objective);
+        if (!matcher.find()) {
+            return MAX_SUBTASKS_PER_PRIMARY;
+        }
+        try {
+            return Math.clamp(Integer.parseInt(matcher.group(1)), 1, MAX_SUBTASKS_PER_PRIMARY);
+        } catch (NumberFormatException ex) {
+            return MAX_SUBTASKS_PER_PRIMARY;
+        }
+    }
+
+    static String subtaskLimitInstruction(String objective) {
+        int limit = maxSubtasksPerPrimary(objective);
+        if (limit >= MAX_SUBTASKS_PER_PRIMARY) {
+            return "";
+        }
+        return "- 阶段拆分上限：每个一级最多 " + limit + " 个二级步骤；超过上限必须合并或删减，"
+                + "不得依赖运行时截断；超限整批会被拒绝。\n";
+    }
 
     /**
      * 主人是否明确要求了可选升级。
@@ -160,6 +190,7 @@ final class RddPlanningPolicy {
         // 3) 可验收
         sb.append("- 每步可验收：condition 必须给真实 asset_key + minimum，或可核对的世界事实；")
                 .append("禁止把\"找村庄/四处探索/变强一些\"当作可验收终点，不得为凑完整而无限拆分。\n");
+        sb.append(subtaskLimitInstruction(objective));
 
         // 4) 高风险
         List<String> risks = riskKinds(objective, stage);
@@ -191,6 +222,10 @@ final class RddPlanningPolicy {
         rules.add("reuse-held-assets");
         if (RddMiningPrerequisite.relevant(objective)) rules.add("scoped-harvest-prerequisite");
         rules.add("verifiable-conditions");
+        int subtaskLimit = maxSubtasksPerPrimary(objective);
+        if (subtaskLimit < MAX_SUBTASKS_PER_PRIMARY) {
+            rules.add("primary-subtask-limit:" + subtaskLimit);
+        }
         for (String risk : riskKinds(objective, stage)) {
             rules.add("risk:" + risk);
         }

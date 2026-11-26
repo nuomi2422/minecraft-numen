@@ -439,6 +439,14 @@ final class RddDecomposer {
      */
     static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded,
                                              String objective) {
+        return stageBPublished(parsed, guarded, objective, RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY);
+    }
+
+    static List<SubtaskSpec> stageBPublished(RddStageBSpecParser.Parsed parsed, RddPlanGuard.Filtered guarded,
+                                             String objective, int maxSubtasks) {
+        if (parsed.specs().size() > Math.clamp(maxSubtasks, 1, RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY)) {
+            return List.of();
+        }
         boolean optionalAllowed = RddPlanningPolicy.optionalAllowed(objective);
         for (var skipped : parsed.skippedRequired()) {
             boolean unrequestedOptional = !optionalAllowed
@@ -464,6 +472,8 @@ final class RddDecomposer {
         }
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         var miningContext = RddMiningCapabilityCheck.capture(companionId);
+        int maxSubtasks = owner == null ? RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY
+                : RddPlanningPolicy.maxSubtasksPerPrimary(owner.goal().description());
         dispatchStageB(companionId, themeObjective, owner, ownerRevision, attempt, completedStages, extraHint,
                 snapshot, knownFailures, RddPlanningKnowledge.HOST,
                 () -> {
@@ -477,7 +487,7 @@ final class RddDecomposer {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
                                 guarded.dropped(), guarded.reused());
-                        done.accept(stageBPublished(parsed, guarded, themeObjective));
+                        done.accept(stageBPublished(parsed, guarded, themeObjective, maxSubtasks));
                     });
                 },
                 () -> done.accept(List.of())));
@@ -491,6 +501,8 @@ final class RddDecomposer {
                                      String concernRef, Consumer<ConcernPlan> done) {
         PlanningAssetSnapshot snapshot = RddPlugin.planningSnapshot(companionId);
         var miningContext = RddMiningCapabilityCheck.capture(companionId);
+        int maxSubtasks = owner == null ? RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY
+                : RddPlanningPolicy.maxSubtasksPerPrimary(owner.goal().description());
         String reviewHint = hint + "\n\nConcern review ref=" + concernRef
                 + "\nReturn concern_review with this exact ref, a proposal, reason and basis. "
                 + "A proposal is not host verification. If evidence is missing use DEFERRED and an actionable resume_condition.";
@@ -504,7 +516,7 @@ final class RddDecomposer {
                             theme, snapshot.availableCounts(), guarded -> {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(theme, "stage_b"), guarded.dropped(), guarded.reused());
-                        done.accept(new ConcernPlan(stageBPublished(parsed, guarded, theme), proposal));
+                        done.accept(new ConcernPlan(stageBPublished(parsed, guarded, theme, maxSubtasks), proposal));
                     });
                 }, () -> done.accept(new ConcernPlan(List.of(), null))));
     }
@@ -556,6 +568,12 @@ final class RddDecomposer {
                     + "\n必须包含一个非 optional 的 MAIN 子步骤：condition.type=equipment，condition.slots 与 equipment_target 四槽键值完全一致"
                     + "（物品 ID / #tag 原样保留），在单次检测中同时覆盖 feet/legs/chest/head。"
                     + "四个先后单槽检查、背包持有、仅 head、optional 或 DAILY 步骤均不能代替该整组条件；如有 dimension 约束须保留。";
+        }
+        if (applicableOwner) {
+            String limitInstruction = RddPlanningPolicy.subtaskLimitInstruction(owner.goal().description());
+            if (!limitInstruction.isBlank()) {
+                userContent += "\n\n## 当前一级的步骤数量上限\n" + limitInstruction;
+            }
         }
         send.accept(stageBRequestContent(userContent, rationale));
     }

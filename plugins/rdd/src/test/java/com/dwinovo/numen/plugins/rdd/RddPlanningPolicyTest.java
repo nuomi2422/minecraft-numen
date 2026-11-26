@@ -100,6 +100,33 @@ class RddPlanningPolicyTest {
     // ---------- 5. 最终实际请求含策略约束（不是只测 helper） ----------
 
     @Test
+    void 一级二级上限从已接受目标提取并限制在解析硬门内() {
+        assertEquals(4, RddPlanningPolicy.maxSubtasksPerPrimary(
+                "规划必须拆成多个一级目标，每个一级最多4个二级步骤；后续阶段按前置完成后再展开。"));
+        assertEquals(4, RddPlanningPolicy.maxSubtasksPerPrimary("每个一级目标至多 4 个二级子步骤"));
+        assertEquals(RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY,
+                RddPlanningPolicy.maxSubtasksPerPrimary("通关MC"));
+        assertEquals(RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY,
+                RddPlanningPolicy.maxSubtasksPerPrimary(null));
+        assertEquals(1, RddPlanningPolicy.maxSubtasksPerPrimary("每个一级最多0个二级步骤"));
+        assertEquals(RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY,
+                RddPlanningPolicy.maxSubtasksPerPrimary("每个一级最多99个二级步骤"));
+        assertEquals(RddPlanningPolicy.MAX_SUBTASKS_PER_PRIMARY,
+                RddPlanningPolicy.maxSubtasksPerPrimary("每个一级最多999999999999999999999个二级步骤"));
+    }
+
+    @Test
+    void 显式一级上限进入策略块与观测规则() {
+        String objective = "每个一级最多4个二级步骤；不得把完整长链塞进一个一级";
+        String block = RddPlanningPolicy.block(objective, "stage_a");
+        assertTrue(block.contains("每个一级最多 4 个二级步骤"));
+        assertTrue(block.contains("超限整批会被拒绝"));
+        assertTrue(RddPlanningPolicy.appliedRules(objective, "stage_a")
+                .contains("primary-subtask-limit:4"));
+        assertFalse(RddPlanningPolicy.block("通关MC", "stage_a").contains("阶段拆分上限"));
+    }
+
+    @Test
     void stage_a最终请求含策略约束() {
         String base = RddStagePlanner.planningPrompt("通关MC", Map.of("minecraft:iron_pickaxe", 1));
 
