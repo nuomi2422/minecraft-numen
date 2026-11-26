@@ -84,11 +84,11 @@ final class RddDeclineSideTool implements NumenTool {
             }
             String schedule = switch (currentType) {
                 case "food_supply" -> "5-minute cooldown; urgent hunger with no food can trigger supply sooner";
-                case "death_recovery" -> "recovery can be offered after a new death";
+                case "death_recovery" -> "mainline remains protected until current capability is verified; recovery can be offered after a new death";
                 default -> "repeat offers follow this side task's existing schedule";
             };
             reply.accept(com.dwinovo.numen.task.TaskResult.ok(
-                    "side task declined (" + currentType + "); mainline resumed — " + schedule,
+                    "side task declined (" + currentType + "); " + schedule,
                     Map.of("type", currentType)).toJson());
         } catch (RuntimeException ex) {
             reply.accept(com.dwinovo.numen.task.TaskResult.fail("decline failed: " + ex.getMessage()).toJson());
