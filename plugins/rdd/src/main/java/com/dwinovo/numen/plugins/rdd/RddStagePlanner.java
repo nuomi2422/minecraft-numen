@@ -114,6 +114,8 @@ final class RddStagePlanner {
                     + "不是单个物品，也不是整条战役。阶段按依赖顺序排列，前面的阶段达成后才能进入下一个。"
                     + "若某阶段开工前背包必须先持有某物品，在 wait_for 给出真实 minecraft 命名空间 ID"
                     + "（如 minecraft:stone_pickaxe）和 minimum；无法确定的跨级前置不要硬写。"
+                    + "主人目标里的最终验收、长期储备或终点数量只是终点义务，不得写成早期阶段的 wait_for，"
+                    + "不得把熟食64、两套备用等终点条件变成第一阶段CRITICAL前置；当前阶段只声明真正开工前必须持有的资产。"
                     + "阶段若要求完成时四槽实穿装备，用 equipment_target 明确 feet/legs/chest/head 各槽 ID 或 #tag；"
                     + "这是阶段输出义务，不是 wait_for 背包前置，单头盔/库存不能替代四槽实穿。"
                     + "缺字段沿用旧语义，不从 theme 猜出装备义务。"
@@ -134,6 +136,8 @@ final class RddStagePlanner {
                     + "wait_for 的 minimum：能由配方/规则算死的写准确数（如传送门 10 个黑曜石）；"
                     + "只有到现场才知道多少的（矿脉、木材、附近动物）写小值（1~3）起步，"
                     + "剩余靠她到地方看清后自己补，不要预先写一个大目标。\n"
+                    + "最终验收/长期储备（例如熟食64、两套备用、Protection I全套）只放在最后阶段描述或终点义务，"
+                    + "不得复制到早期阶段wait_for，不得阻塞回基地/补铁/建食物来源等当前可执行阶段。\n"
                     + "阶段间不要遗漏：从现状一路推到主人目标完成。"
                     // 2026-10-28（主人）：一级清单也不许"为了走完时代顺序"硬排中间档。
                     //   注意这是规划期的先验；运行期还能用 rdd_settle_stage 把已经没意义的阶段收口。
@@ -257,8 +261,8 @@ final class RddStagePlanner {
         @Override public String description() {
             return "把主人的整条目标规划成按顺序推进的多个一级发展阶段（主题，不含具体子步骤）。"
                     + "每个阶段的 theme 描述该阶段要达成什么；可选的 wait_for 给进入该阶段前必须已持有的资产"
-                    + "（asset_key 必须是真实 minecraft 命名空间 ID）；equipment_target 是完成时四槽同时实穿的输出义务，"
-                    + "不是背包前置；缺字段保留旧语义。";
+                    + "（asset_key 必须是真实 minecraft 命名空间 ID）；最终验收/长期储备不得写成早期wait_for或CRITICAL前置；"
+                    + "equipment_target 是完成时四槽同时实穿的输出义务，不是背包前置；缺字段保留旧语义。";
         }
         @Override public Map<String, Object> parameterSchema() {
             return Map.of(
