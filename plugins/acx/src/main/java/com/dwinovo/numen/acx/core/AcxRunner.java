@@ -761,7 +761,7 @@ public final class AcxRunner {
                     Map.of("reason", String.valueOf(r.message())));
             return r;
         }
-        AcxStepOutcome afterHostWait = checkCircuit(c, def, 0);
+        AcxStepOutcome afterHostWait = checkHostState(c, def, 0);
         if (afterHostWait != null) return afterHostWait;
         if (out == null) {
             AcxStepOutcome r = AcxStepOutcome.failed(step.id() + " 返回 null outcome（积木契约违规）");
@@ -1025,7 +1025,7 @@ public final class AcxRunner {
         boolean stoppedByMaxIters = false;
 
         while (true) {
-            AcxStepOutcome breaker = checkCircuit(c, def, 0);
+            AcxStepOutcome breaker = checkHostState(c, def, 0);
             if (breaker != null) {
                 return breaker;
             }
@@ -1185,6 +1185,14 @@ public final class AcxRunner {
 
     /** 每步执行前的三道熔断检查。返回非 null 表示该结束整次执行了。 */
     private AcxStepOutcome checkCircuit(Ctx c, AcxDefinition def, int i) {
+        return checkCircuit(c, def, i, true);
+    }
+
+    private AcxStepOutcome checkHostState(Ctx c, AcxDefinition def, int i) {
+        return checkCircuit(c, def, i, false);
+    }
+
+    private AcxStepOutcome checkCircuit(Ctx c, AcxDefinition def, int i, boolean enforceStepBudget) {
         if (c.cancelFlag.get()) {
             return cancelled(c);
         }
@@ -1198,7 +1206,7 @@ public final class AcxRunner {
             return AcxStepOutcome.timedOut(
                     "AC 熔断: 执行超时（" + (now - c.start) + "ms），当前: " + where);
         }
-        if (c.stepCounter[0] >= c.limits.maxSteps()) {
+        if (enforceStepBudget && c.stepCounter[0] >= c.limits.maxSteps()) {
             emit(c, AcxEvent.Kind.CIRCUIT_STEPS, c.currentStepId, AcxStatus.FAIL,
                     Map.of("max_steps", c.limits.maxSteps()));
             return AcxStepOutcome.failed(

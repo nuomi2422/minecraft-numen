@@ -65,6 +65,52 @@ class AcxSharedBudgetFacadeConsumerTest {
     }
 
     @Test
+    void singleAtomicStepAtTheLimitSucceedsWithoutAPostExecutionStepFailure() {
+        var f = new InlineFixture("""
+                {"name":"single_budget","version":"v1","limits":{"max_steps":1},"steps":[
+                  {"id":"only","block":"leaf_marker","params":{"call":"once","ordinal":1}}
+                ]}
+                """);
+        AcxRunRecord record = f.execute(Map.of());
+        assertEquals(AcxStatus.SUCCESS, record.status(), record.errorMessage());
+        assertEquals(1, record.completedStepIndex());
+        assertEquals(1, f.marker.calls.size());
+        assertTrue(f.circuits().isEmpty());
+    }
+
+    @Test
+    void forLoopAtTheLimitSucceedsWhenNoFurtherChildStarts() {
+        var f = new InlineFixture("""
+                {"name":"for_budget","version":"v1","limits":{"max_steps":3},"steps":[
+                  {"id":"loop","block":"for","params":{"list":"$input.items","as":"item"},"children":[
+                    {"id":"leaf","block":"leaf_marker","params":{"call":"$var.item","ordinal":1}}
+                  ]}
+                ]}
+                """);
+        AcxRunRecord record = f.execute(Map.of("items", List.of("a", "b", "c")));
+        assertEquals(AcxStatus.SUCCESS, record.status(), record.errorMessage());
+        assertEquals(1, record.completedStepIndex());
+        assertEquals(3, f.marker.calls.size());
+        assertTrue(f.circuits().isEmpty());
+    }
+
+    @Test
+    void forLoopOverTheLimitStillStopsBeforeTheExtraChild() {
+        var f = new InlineFixture("""
+                {"name":"for_budget_over","version":"v1","limits":{"max_steps":2},"steps":[
+                  {"id":"loop","block":"for","params":{"list":"$input.items","as":"item"},"children":[
+                    {"id":"leaf","block":"leaf_marker","params":{"call":"$var.item","ordinal":1}}
+                  ]}
+                ]}
+                """);
+        AcxRunRecord record = f.execute(Map.of("items", List.of("a", "b", "c")));
+        assertEquals(AcxStatus.FAIL, record.status(), record.errorMessage());
+        assertTrue(record.errorMessage().contains("最大总步数 2"), record.errorMessage());
+        assertEquals(2, f.marker.calls.size());
+        assertEquals(1, f.circuits().size());
+    }
+
+    @Test
     void sevenStepsStopBeforeSecondCallSitesLastLeafDespiteLargeChildLimits() {
         Fixture f = new Fixture(tempDir, 7);
         AcxRunRecord failed = f.execute(AcxStatus.FAIL, 1);
@@ -159,6 +205,37 @@ class AcxSharedBudgetFacadeConsumerTest {
         }
     }
 
+    private static final class InlineFixture {
+        final LeafMarker marker = new LeafMarker();
+        final List<AcxEvent> events = new ArrayList<>();
+        final AcxDefinition definition;
+        final AcxSessionManager sessions;
+        final AcxRegistry registry;
+
+        InlineFixture(String json) {
+            registry = new AcxRegistry();
+            registry.register(marker);
+            definition = AcxLoader.parseJson(json, registry);
+            AcxRunner runner = AcxRunner.builder().tools(registry).events(events::add).build();
+            sessions = new AcxSessionManager(runner, Runnable::run);
+        }
+
+        AcxRunRecord execute(Map<String, Object> input) {
+            AcxFacade facade = new AcxFacade(sessions,
+                    name -> definition.name().equals(name) ? definition : null, registry, null);
+            Map<String, Object> accepted = data(facade.execute(Map.of("ac_name", definition.name(), "input", input)));
+            String runId = assertInstanceOf(String.class, accepted.get("run_id"));
+            AcxRunRecord record = sessions.session(runId).record();
+            assertNotNull(record);
+            assertFalse(sessions.session(runId).isRunning());
+            return record;
+        }
+
+        List<AcxEvent> circuits() {
+            return events.stream().filter(event -> event.kind() == AcxEvent.Kind.CIRCUIT_STEPS).toList();
+        }
+    }
+
     private record LeafCall(String runId, String stepId, Map<String, Object> params) { }
 
     private static final class LeafMarker implements AcxTool {
@@ -174,7 +251,7 @@ class AcxSharedBudgetFacadeConsumerTest {
 
         @Override public AcxStepOutcome execute(Map<String, Object> params, AcxCallContext ctx) {
             calls.add(new LeafCall(ctx.runId(), ctx.stepId(), Map.copyOf(params)));
-            return AcxStepOutcome.success(Map.of());
+            return AcxStepOutcome.success(Map.of("progress", 1));
         }
     }
 
