@@ -495,6 +495,29 @@ final class RddDecomposer {
     static void decomposeSpecsWithHint(UUID companionId, TaskChain owner, long ownerRevision,
                                        String themeObjective, int attempt, List<String> completedStages,
                                        String extraHint, Consumer<List<SubtaskSpec>> done) {
+        decomposeSpecsCore(companionId, owner, ownerRevision, themeObjective, attempt, completedStages, extraHint,
+                result -> done.accept(result.specs()));
+    }
+
+    /** Same call, but carries the first guard rejection reason back for the next attempt. */
+    static void decomposeSpecsResult(UUID companionId, TaskChain owner, long ownerRevision,
+                                     String themeObjective, int attempt, List<String> completedStages,
+                                     String extraHint, Consumer<StageBResult> done) {
+        decomposeSpecsCore(companionId, owner, ownerRevision, themeObjective, attempt, completedStages, extraHint, done);
+    }
+
+    record StageBResult(List<SubtaskSpec> specs, String rejectionHint) {}
+
+    private static String boundedFirstDrop(List<String> dropped) {
+        if (dropped == null || dropped.isEmpty()) return "";
+        String first = dropped.stream().filter(s -> s != null && !s.isBlank()).findFirst().orElse("");
+        String flat = first.replaceAll("\\s+", " ").strip();
+        return flat.length() <= 600 ? flat : flat.substring(0, 600) + "…";
+    }
+
+    private static void decomposeSpecsCore(UUID companionId, TaskChain owner, long ownerRevision,
+                                       String themeObjective, int attempt, List<String> completedStages,
+                                       String extraHint, Consumer<StageBResult> done) {
         // 2026-11-02：死亡原因/坐标也进 knownFailures（否则规划侧永远召不回死亡教训）。
         // 上一次被判定不可执行 → 把该失败事实一并交给知识侧，召回「这类失败该怎么办」的经验
         List<String> knownFailures = new java.util.ArrayList<>(RddDeathSpotFacts.knownFailuresFor(companionId));
@@ -522,12 +545,14 @@ final class RddDecomposer {
                         RddPlanningKnowledge.publishPolicy(companionId, "stage_b",
                                 RddPlanningPolicy.appliedRules(themeObjective, "stage_b"),
                                 guarded.dropped(), guarded.reused());
-                        done.accept(stageBPublished(parsed, guarded, themeObjective, maxSubtasks,
+                        List<SubtaskSpec> published = stageBPublished(parsed, guarded, themeObjective, maxSubtasks,
                                 firstPrimarySubtaskCount, primaryIndex,
-                                owner == null ? themeObjective : owner.goal().description()));
+                                owner == null ? themeObjective : owner.goal().description());
+                        String rejectionHint = published.isEmpty() ? boundedFirstDrop(guarded.dropped()) : "";
+                        done.accept(new StageBResult(published, rejectionHint));
                     });
                 },
-                () -> done.accept(List.of())));
+                () -> done.accept(new StageBResult(List.of(), ""))));
     }
 
     record ConcernPlan(List<SubtaskSpec> specs, RddStageBSpecParser.ConcernProposal proposal) {}

@@ -43,6 +43,7 @@ final class RddGoalDriver {
         Object request;
         RddRuntime owner;
         long revision;
+        String stageBRejectionHint = "";
         com.dwinovo.numen.entity.NumenPlayer body;
     }
 
@@ -72,6 +73,7 @@ final class RddGoalDriver {
             boolean fire;
             boolean escalatedNow;
             Object request;
+            String rejectionHint = "";
             synchronized (st) {
                 String pid = cur.id();
                 if (!pid.equals(st.primaryId) || st.owner != rt) { // 换到新一级 → 重置预算/冷却/在途
@@ -81,6 +83,7 @@ final class RddGoalDriver {
                     st.cooldownUntil = 0;
                     st.inFlight = false;
                     st.escalated = false;
+                    st.stageBRejectionHint = "";
                 }
                 long now = System.currentTimeMillis();
                 fire = RddExpansionPolicy.shouldFire(st.inFlight, st.escalated, st.attempts,
@@ -91,6 +94,7 @@ final class RddGoalDriver {
                     st.request = new Object();
                     st.revision = ownerRevision;
                     st.body = RddCompanionBody.get(companionId);
+                    rejectionHint = st.stageBRejectionHint;
                 } else {
                     attempt = 0;
                 }
@@ -123,9 +127,12 @@ final class RddGoalDriver {
                 return;
             }
             var ticket = RddPlugin.planningTicket(companionId);
-            RddDecomposer.decomposeSpecs(companionId, chain, ownerRevision, cur.description(), attempt, completed,
-                    specs -> RddPlugin.onServer(server, ticket,
-                            () -> finish(companionId, rt, st, cur.id(), request, specs)));
+            String hint = rejectionHint == null || rejectionHint.isBlank() ? ""
+                    : "## 上一次 Stage-B 拒绝原因（只修判据，不扩范围）\n" + rejectionHint
+                    + "\n请针对该步骤修改 description/condition，使判据覆盖所述动作；不要重复相同计划，不要放宽任务范围或世界选择边界。";
+            RddDecomposer.decomposeSpecsResult(companionId, chain, ownerRevision, cur.description(), attempt, completed,
+                    hint, result -> RddPlugin.onServer(server, ticket,
+                            () -> finish(companionId, rt, st, cur.id(), request, result)));
         } catch (RuntimeException ex) {
             LOG.warn("[rdd] 展开驱动异常: {}", ex.toString());
         }
@@ -163,7 +170,8 @@ final class RddGoalDriver {
 
     /** Stage-B 结果回收（MC 线程）：注入或计失败；任何"不可用"都算失败，绝不注入占位假二级。 */
     private static void finish(UUID companionId, RddRuntime rt, State st, String pid,
-                               Object request, List<SubtaskSpec> specs) {
+                               Object request, RddDecomposer.StageBResult result) {
+        List<SubtaskSpec> specs = result.specs();
         // Validate the captured owner before touching a replacement's inFlight or retry budget.
         if (RddPlugin.runtime(companionId) != rt || STATES.get(companionId) != st
                 || !rt.chain().currentPrimary().id().equals(pid)) {
@@ -181,7 +189,9 @@ final class RddGoalDriver {
             }
             if (specs == null || specs.isEmpty()) {
                 failure = "no usable subtasks (empty or legal-but-unexecutable after strict parse)";
+                st.stageBRejectionHint = result.rejectionHint() == null ? "" : result.rejectionHint();
             } else {
+                st.stageBRejectionHint = "";
                 try {
                     RddRationale.expand(companionId, chain, () -> {
                         var current = RddPlugin.runtime(companionId);
