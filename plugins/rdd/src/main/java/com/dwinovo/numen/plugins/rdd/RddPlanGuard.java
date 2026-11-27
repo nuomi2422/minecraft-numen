@@ -86,7 +86,7 @@ final class RddPlanGuard {
                 || "container_nearby".equals(String.valueOf(c.get("type")));
         // 2026-11-28: "把背包里的X放下/放进箱" 是放置动作，世界方块判据正好覆盖其结果；
         // 只有"清点背包"式（无放置/存入动词）才按背包意图缺口处理。
-        boolean placementOrStore = d.matches(".*(?:放下|放置|安置|摆好|摆上|放到|放进|放在|存进|存入|收进|搬进).*");
+        boolean placementOrStore = d.matches(".*(?:放下|放置|安置|摆好|摆上|摆放|放到|放进|放在|存进|存入|收进|搬进|补放|补上|就位).*");
         if (!declaredPurposes && acquireIntent && existenceOnly && !placementOrStore) {
             gaps.add("取得物品（判据只证附近方块或容器存在，未证实际入包）");
         }

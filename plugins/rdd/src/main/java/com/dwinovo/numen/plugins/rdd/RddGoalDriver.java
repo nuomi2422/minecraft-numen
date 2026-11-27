@@ -129,7 +129,7 @@ final class RddGoalDriver {
             var ticket = RddPlugin.planningTicket(companionId);
             String hint = rejectionHint == null || rejectionHint.isBlank() ? ""
                     : "## 上一次 Stage-B 拒绝原因（只修判据，不扩范围）\n" + rejectionHint
-                    + "\n请针对该步骤修改 description/condition，使判据覆盖所述动作；不要重复相同计划，不要放宽任务范围或世界选择边界。";
+                    + "\n请针对该步骤修改 description/condition：描述若同时写“背包里/随身”与放置/存入动作，删掉背包来源只写放置/存入后的世界结果；每个 MAIN 步的判据必须覆盖描述里的动作；不要重复相同计划，不要放宽任务范围或世界选择边界。";
             RddDecomposer.decomposeSpecsResult(companionId, chain, ownerRevision, cur.description(), attempt, completed,
                     hint, result -> RddPlugin.onServer(server, ticket,
                             () -> finish(companionId, rt, st, cur.id(), request, result)));
