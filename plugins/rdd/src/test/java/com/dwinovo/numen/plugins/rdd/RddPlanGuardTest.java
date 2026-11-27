@@ -339,6 +339,24 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void shelter以床为圆心不把床误当额外设施要求() {
+        SubtaskSpec shelter = new SubtaskSpec(
+                "以已绑定的床为圆心复核安全房屋：半径8格内墙块至少20块，头顶不超过2格且有顶盖。"
+                        + "若现成房屋不满足，只补最小缺口或换用村内更合适的房屋；不建交易所、不新开农场。",
+                Map.of("type", "shelter", "minimum", 20, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(shelter).isEmpty(), RddPlanGuard.predicateGaps(shelter).toString());
+    }
+
+    @Test
+    void shelter同一张床周围与床继续保留不误报设施缺口() {
+        SubtaskSpec shelter = new SubtaskSpec(
+                "复核同一张床周围至少20个墙块且头顶2格内有顶盖，确认房屋可挡雨并便于封门避怪；"
+                        + "不合格时换用村内安全房屋或利用现成材料补齐，床继续保留。",
+                Map.of("type", "shelter", "minimum", 20, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(shelter).isEmpty(), RddPlanGuard.predicateGaps(shelter).toString());
+    }
+
+    @Test
     void equipment不能冒充主手副手与食物要求() {
         SubtaskSpec s = new SubtaskSpec("完成出门配置：穿齐四槽铁甲，主手铁剑、副手盾，并随身带至少16份熟食",
                 Map.of("type", "equipment", "slots", Map.of(

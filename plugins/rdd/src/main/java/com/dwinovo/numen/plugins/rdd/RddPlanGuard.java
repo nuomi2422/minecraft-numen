@@ -107,7 +107,7 @@ final class RddPlanGuard {
         if ("lit".equals(conditionType) && positiveMatch(d, FACILITY_ITEM)) {
             gaps.add("据点设施（lit只证光源，不证床/箱/工作台/熔炉/食物）");
         }
-        if ("shelter".equals(conditionType) && positiveMatch(d, FACILITY_ITEM)) {
+        if ("shelter".equals(conditionType) && positiveMatch(withoutBedAnchorOrInvariant(d), FACILITY_ITEM)) {
             gaps.add("据点设施（shelter只证墙顶遮蔽，不证床/箱/工作台/熔炉/食物）");
         }
         if ("equipment".equals(conditionType) && d.contains("附魔")) {
@@ -189,6 +189,16 @@ final class RddPlanGuard {
             java.util.regex.Pattern.compile("(?:食物|熟食|可食)");
     private static final java.util.regex.Pattern TRAVEL_INTENT =
             java.util.regex.Pattern.compile("(?:迁移|前往|远处|新地点|\\d{2,4}\\s*格)");
+
+    /** Bed used as the spatial anchor or a carried invariant is not an extra shelter facility obligation. */
+    private static String withoutBedAnchorOrInvariant(String description) {
+        return description
+                .replaceAll("以[^，。；]{0,24}床为(?:圆心|锚点|中心)", "")
+                .replaceAll("围绕[^，。；]{0,24}床", "")
+                .replaceAll("同一张床(?:周围|周边)", "")
+                .replaceAll("床(?:周围|周边)", "")
+                .replaceAll("床(?:始终|继续|仍)?保留", "");
+    }
 
     /** Backpack wording only: strong nouns stay unconditional; 清点 counts only with a backpack object. */
     private static boolean backpackIntent(String d) {
