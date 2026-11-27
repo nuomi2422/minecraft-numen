@@ -510,9 +510,10 @@ final class RddDecomposer {
 
     private static String boundedFirstDrop(List<String> dropped) {
         if (dropped == null || dropped.isEmpty()) return "";
-        String first = dropped.stream().filter(s -> s != null && !s.isBlank()).findFirst().orElse("");
-        String flat = first.replaceAll("\\s+", " ").strip();
-        return flat.length() <= 600 ? flat : flat.substring(0, 600) + "…";
+        String joined = dropped.stream().filter(s -> s != null && !s.isBlank()).limit(3)
+                .map(s -> s.replaceAll("\\s+", " ").strip())
+                .reduce((a, b) -> a + "；" + b).orElse("");
+        return joined.length() <= 900 ? joined : joined.substring(0, 900) + "…";
     }
 
     private static void decomposeSpecsCore(UUID companionId, TaskChain owner, long ownerRevision,

@@ -197,6 +197,8 @@ final class RddPlanGuard {
                 .replaceAll("围绕[^，。；]{0,24}床", "")
                 .replaceAll("同一张床(?:周围|周边)", "")
                 .replaceAll("床(?:周围|周边)", "")
+                .replaceAll("床(?:附近)", "")
+                .replaceAll("床(?:与|和)[^，。；]{0,12}活动区", "")
                 .replaceAll("床(?:始终|继续|仍)?保留", "");
     }
 

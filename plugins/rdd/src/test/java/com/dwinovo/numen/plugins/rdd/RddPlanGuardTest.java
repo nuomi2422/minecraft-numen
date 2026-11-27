@@ -357,6 +357,14 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void lit床与活动区措辞不误报设施缺口() {
+        SubtaskSpec lit = new SubtaskSpec(
+                "在床周边选落脚区，把圆石垫平，并用现有火把照亮这块区域，划出床与活动区。",
+                Map.of("type", "lit", "minimum", 2, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(lit).isEmpty(), RddPlanGuard.predicateGaps(lit).toString());
+    }
+
+    @Test
     void base已有重生床就跳过制作不误报执行动作() {
         SubtaskSpec base = new SubtaskSpec(
                 "核实并保留现有床：确认基地床还在，别挖走；已有重生床就跳过制作。",
