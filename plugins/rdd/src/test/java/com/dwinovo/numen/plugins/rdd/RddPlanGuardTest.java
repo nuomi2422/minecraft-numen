@@ -357,6 +357,14 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void base已有重生床就跳过制作不误报执行动作() {
+        SubtaskSpec base = new SubtaskSpec(
+                "核实并保留现有床：确认基地床还在，别挖走；已有重生床就跳过制作。",
+                Map.of("type", "base", "dimension", "minecraft:overworld"), null);
+        assertTrue(RddPlanGuard.predicateGaps(base).isEmpty(), RddPlanGuard.predicateGaps(base).toString());
+    }
+
+    @Test
     void lit以床为锚点插火把不误报设施缺口() {
         SubtaskSpec lit = new SubtaskSpec(
                 "在活动区与床周围插上火把，保证夜里这片地不刷怪、能安心睡。",

@@ -164,7 +164,7 @@ final class RddPlanGuard {
     private static final java.util.regex.Pattern MUTATION_ACTION =
             java.util.regex.Pattern.compile("(?:制作|合成|打造|采集|收集|获得|拿到|存入|放入|补充|补做|建立|搭建|扩建|迁移|前往|附魔|烧炼|烤熟|播种|种下|击杀|攻击|挖掘|开采)");
     private static final java.util.regex.Pattern NEGATED_CLAUSE =
-            java.util.regex.Pattern.compile("(?:不检查|不验证|不要求|不提|无需|不必|不得|禁止|不要|不包括|无法|不重做|不做|不制作|不合成|不打造|不采集|不收集|不存入|不存放|不放入|不转存|不转移|不交付|不补充|不补做|不建立|不搭建|不建造|不扩建|不修建|不迁移|不前往|不到达|不附魔|不烧炼|不烤熟|不用熔炉|不使用熔炉|不播种|不种下|不种植|不击杀|不攻击|不挖掘|不开采|不交易|不购买|不出售|不交换|不换铁|不换得)");
+            java.util.regex.Pattern.compile("(?:跳过|不检查|不验证|不要求|不提|无需|不必|不得|禁止|不要|不包括|无法|不重做|不做|不制作|不合成|不打造|不采集|不收集|不存入|不存放|不放入|不转存|不转移|不交付|不补充|不补做|不建立|不搭建|不建造|不扩建|不修建|不迁移|不前往|不到达|不附魔|不烧炼|不烤熟|不用熔炉|不使用熔炉|不播种|不种下|不种植|不击杀|不攻击|不挖掘|不开采|不交易|不购买|不出售|不交换|不换铁|不换得)");
 
     private static boolean positiveMatch(String description, java.util.regex.Pattern pattern) {
         var matcher = pattern.matcher(description);
