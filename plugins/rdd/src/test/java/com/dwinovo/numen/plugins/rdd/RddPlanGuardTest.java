@@ -365,6 +365,14 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void stocked存放原木圆石泥土不作具体库存缺口() {
+        SubtaskSpec stocked = new SubtaskSpec(
+                "把储物箱放到床边8格内，把随身多余的圆石、泥土、原木放进去归位。",
+                Map.of("type", "stocked", "minimum", 10, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(stocked).isEmpty(), RddPlanGuard.predicateGaps(stocked).toString());
+    }
+
+    @Test
     void base已有重生床就跳过制作不误报执行动作() {
         SubtaskSpec base = new SubtaskSpec(
                 "核实并保留现有床：确认基地床还在，别挖走；已有重生床就跳过制作。",

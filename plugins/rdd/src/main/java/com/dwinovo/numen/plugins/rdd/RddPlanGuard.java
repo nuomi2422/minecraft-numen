@@ -180,7 +180,7 @@ final class RddPlanGuard {
     }
 
     private static final java.util.regex.Pattern SPECIFIC_STORED_ITEM =
-            java.util.regex.Pattern.compile("(?:铁甲|铁剑|铁镐|盾|熟食|食物|煤炭|煤|木|黑曜石|minecraft:)");
+            java.util.regex.Pattern.compile("(?:铁甲|铁剑|铁镐|木剑|木镐|木甲|盾|熟食|食物|煤炭|煤|黑曜石|minecraft:)");
     private static final java.util.regex.Pattern FACILITY_ITEM =
             java.util.regex.Pattern.compile("(?:床|箱|工作台|熔炉|食物|熟食)");
     private static final java.util.regex.Pattern EQUIPMENT_EXTRA =
