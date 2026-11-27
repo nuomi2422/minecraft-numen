@@ -16,6 +16,7 @@ final class RddDecomposerPrompt {
 
     static final String SYSTEM_PROMPT =
             "你是 MC 女仆的目标分解器。把主人的目标拆成 1~8 个具体、按依赖顺序排列、可逐步检测的子步骤。"
+                    + "**每个子步骤只写一个动作、只配一个判据**：不要在描述里写「若不足就…」的备用动作，也不要写「本判据不证明…/只证…不证…」的免责句——备用动作请另起一步，免责句会被判据覆盖校验判成缺口。"
                     + "每个子步骤的 condition 必须用真实的 minecraft 物品命名空间 ID（如 minecraft:oak_log、"
                     + "minecraft:iron_ingot）。**数量分两类，别搞混**："
                     + "① 配方/规则能算死的，照样写准数（如钻石镐要 3 个钻石、下界传送门要 10 个黑曜石、"
