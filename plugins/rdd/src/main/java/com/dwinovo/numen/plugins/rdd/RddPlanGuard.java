@@ -104,7 +104,7 @@ final class RddPlanGuard {
         if ("stocked".equals(conditionType) && positiveMatch(d, SPECIFIC_STORED_ITEM)) {
             gaps.add("具体库存（stocked只证容器总件数，不证铁甲/剑盾/工具等指定物品与套数）");
         }
-        if ("lit".equals(conditionType) && positiveMatch(d, FACILITY_ITEM)) {
+        if ("lit".equals(conditionType) && positiveMatch(withoutBedAnchorOrInvariant(d), FACILITY_ITEM)) {
             gaps.add("据点设施（lit只证光源，不证床/箱/工作台/熔炉/食物）");
         }
         if ("shelter".equals(conditionType) && positiveMatch(withoutBedAnchorOrInvariant(d), FACILITY_ITEM)) {

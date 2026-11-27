@@ -357,6 +357,14 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void lit以床为锚点插火把不误报设施缺口() {
+        SubtaskSpec lit = new SubtaskSpec(
+                "在活动区与床周围插上火把，保证夜里这片地不刷怪、能安心睡。",
+                Map.of("type", "lit", "minimum", 4, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(lit).isEmpty(), RddPlanGuard.predicateGaps(lit).toString());
+    }
+
+    @Test
     void equipment不能冒充主手副手与食物要求() {
         SubtaskSpec s = new SubtaskSpec("完成出门配置：穿齐四槽铁甲，主手铁剑、副手盾，并随身带至少16份熟食",
                 Map.of("type", "equipment", "slots", Map.of(
