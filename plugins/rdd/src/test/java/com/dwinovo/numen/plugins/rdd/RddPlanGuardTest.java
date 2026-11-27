@@ -129,6 +129,58 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 主人禁止交易时不得规划村民交易() {
+        SubtaskSpec trade = new SubtaskSpec("用绿宝石和村民交易iron_ingot",
+                Map.of("asset_key", "minecraft:iron_ingot", "minimum", 1), null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(trade),
+                "不做交易所、不刷村民交易，缺铁直接挖矿", Map.of());
+        assertTrue(filtered.allowed().isEmpty());
+        assertTrue(filtered.dropped().stream().anyMatch(g -> g.contains("禁止交易所")),
+                filtered.dropped().toString());
+    }
+
+    @Test
+    void 禁止交易时直接挖矿仍合法() {
+        SubtaskSpec mine = new SubtaskSpec("在安全干燥矿道挖raw_iron",
+                Map.of("type", "item_picked_up", "item", "minecraft:raw_iron", "minimum", 1), null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(mine),
+                "不做交易所、不刷村民交易，缺铁直接挖矿", Map.of());
+        assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
+    }
+
+    @Test
+    void 一级制作要求不得缩水成纯装备核验() {
+        SubtaskSpec check = new SubtaskSpec("保持已穿四槽铁甲不动，实测装备齐全",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(check),
+                "继续制作备用胸甲、护腿、靴和铁镐并存入箱子", Map.of());
+        assertTrue(filtered.allowed().isEmpty());
+        assertTrue(filtered.dropped().stream().anyMatch(g -> g.contains("一级主题动作未覆盖")),
+                filtered.dropped().toString());
+    }
+
+    @Test
+    void 一级制作要求由真实制作子步骤覆盖() {
+        SubtaskSpec craft = new SubtaskSpec("用8铁锭做备用iron_chestplate",
+                Map.of("type", "item_crafted", "item", "minecraft:iron_chestplate", "minimum", 1), null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(craft),
+                "继续制作备用胸甲、护腿、靴和铁镐", Map.of("minecraft:iron_ingot", 8));
+        assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
+    }
+
+    @Test
+    void 一级否定制作不要求制作子步骤() {
+        SubtaskSpec check = new SubtaskSpec("核验当前四槽铁甲实穿",
+                Map.of("type", "equipment", "slots", Map.of(
+                        "feet", "minecraft:iron_boots", "legs", "minecraft:iron_leggings",
+                        "chest", "minecraft:iron_chestplate", "head", "minecraft:iron_helmet")), null);
+        var filtered = RddPlanGuard.filterSubtasks(List.of(check), "不制作新装备，只核验当前四槽", Map.of());
+        assertEquals(1, filtered.allowed().size(), filtered.dropped().toString());
+    }
+
+    @Test
     void 顺序产出工具时后续步骤不误丢() {
         // 2026-11-02 实机：Stage-B 首两步行文「搓木棍做木镐」→「用木镐挖石头做石镐」，
         // 旧实现按当前空背包逐条判，两条全丢，第一步就没人干活。

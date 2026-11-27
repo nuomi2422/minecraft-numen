@@ -164,7 +164,7 @@ final class RddPlanGuard {
     private static final java.util.regex.Pattern MUTATION_ACTION =
             java.util.regex.Pattern.compile("(?:制作|合成|打造|采集|收集|获得|拿到|存入|放入|补充|补做|建立|搭建|扩建|迁移|前往|附魔|烧炼|烤熟|播种|种下|击杀|攻击|挖掘|开采)");
     private static final java.util.regex.Pattern NEGATED_CLAUSE =
-            java.util.regex.Pattern.compile("(?:不检查|不验证|不要求|不提|无需|不必|不得|禁止|不要|不包括|不制作|不合成|不打造|不采集|不收集|不存入|不放入|不补充|不补做|不建立|不搭建|不扩建|不迁移|不前往|不附魔|不烧炼|不烤熟|不播种|不种下|不击杀|不攻击|不挖掘|不开采)");
+            java.util.regex.Pattern.compile("(?:不检查|不验证|不要求|不提|无需|不必|不得|禁止|不要|不包括|无法|不重做|不做|不制作|不合成|不打造|不采集|不收集|不存入|不存放|不放入|不转存|不转移|不交付|不补充|不补做|不建立|不搭建|不建造|不扩建|不修建|不迁移|不前往|不到达|不附魔|不烧炼|不烤熟|不用熔炉|不使用熔炉|不播种|不种下|不种植|不击杀|不攻击|不挖掘|不开采|不交易|不购买|不出售|不交换|不换铁|不换得)");
 
     private static boolean positiveMatch(String description, java.util.regex.Pattern pattern) {
         var matcher = pattern.matcher(description);
@@ -174,7 +174,7 @@ final class RddPlanGuard {
                             Math.max(description.lastIndexOf("；", matcher.start()),
                                     Math.max(description.lastIndexOf(",", matcher.start()),
                                             description.lastIndexOf("\n", matcher.start())))));
-            if (!NEGATED_CLAUSE.matcher(description.substring(clauseStart + 1, matcher.start())).find()) return true;
+            if (!NEGATED_CLAUSE.matcher(description.substring(clauseStart + 1, matcher.end())).find()) return true;
         }
         return false;
     }
@@ -416,6 +416,8 @@ final class RddPlanGuard {
             return new Filtered(List.of(), List.of(), List.of());
         }
         boolean optionalAllowed = RddPlanningPolicy.optionalAllowed(objective);
+        boolean tradeForbidden = objective != null && objective.matches(
+                ".*(?:不做交易所|不刷村民交易|禁止.{0,8}交易|不允许.{0,8}交易|不得.{0,8}交易).*");
         // 规划期按"当前背包 + 前面步骤已产出的工具"顺序求值；不是所有步骤都用同一份空背包。
         Map<String, Integer> effectiveHeld = new java.util.LinkedHashMap<>();
         if (held != null) effectiveHeld.putAll(held);
@@ -426,6 +428,10 @@ final class RddPlanGuard {
         List<String> reused = new ArrayList<>();
         java.util.Set<String> prepared = new java.util.LinkedHashSet<>();
         for (SubtaskSpec spec : specs) {
+            if (tradeForbidden && positiveMatch(spec.description(), TRADE_ACTION)) {
+                dropped.add("主人明确禁止交易所/村民交易，必须直接挖矿：" + spec.description());
+                return new Filtered(List.of(), List.copyOf(dropped), List.copyOf(reused));
+            }
             String capabilityConflict = alreadyHeld(spec, held) ? ""
                     : RddMiningPrerequisite.contradiction(spec, held, evidence, prepared);
             if (!capabilityConflict.isBlank()) {
@@ -481,8 +487,12 @@ final class RddPlanGuard {
 
         if (allowed.isEmpty()) {
             // 保护性让步只适用于「已持有」这一类：它们合法、只是多余，会被资产检测立刻验收，
-            // 清空反而会把「本来就做完的一级」变成一次升级上报。
             // 违规的可选升级（dropped 那批）绝不因此复活。
+            List<String> actionGaps = primaryActionGaps(objective, heldOnes);
+            if (!actionGaps.isEmpty()) {
+                dropped.add("一级主题动作未覆盖（" + String.join("/", actionGaps) + "）→ 子步骤不得缩水成纯核验");
+                return new Filtered(List.of(), dropped, reused);
+            }
             return new Filtered(List.copyOf(heldOnes), dropped, reused);
         }
         List<SubtaskSpec> normalized = new ArrayList<>(allowed.size());
@@ -498,7 +508,39 @@ final class RddPlanGuard {
                 normalized.add(spec);
             }
         }
+        List<String> actionGaps = primaryActionGaps(objective, normalized);
+        if (!actionGaps.isEmpty()) {
+            dropped.add("一级主题动作未覆盖（" + String.join("/", actionGaps) + "）→ 子步骤不得缩水成纯核验");
+            return new Filtered(List.of(), dropped, reused);
+        }
         return new Filtered(List.copyOf(normalized), dropped, reused);
+    }
+
+    private static final java.util.regex.Pattern TRADE_ACTION =
+            java.util.regex.Pattern.compile("(?:村民交易|交易所|进行交易|购买|出售|交换|换铁|换得|trade)", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    private static final java.util.Map<String, java.util.regex.Pattern> PRIMARY_ACTIONS = java.util.Map.of(
+            "制作", java.util.regex.Pattern.compile("(?:制作|合成|打造|做|造)"),
+            "采集", java.util.regex.Pattern.compile("(?:采集|收集|获得|拿到|开采|挖掘|挖)"),
+            "存入", java.util.regex.Pattern.compile("(?:存入|存放|放入|转存|转移|交付)"),
+            "建造", java.util.regex.Pattern.compile("(?:建立|搭建|建造|扩建|修建)"),
+            "迁移", java.util.regex.Pattern.compile("(?:迁移|前往|到达|走去)"),
+            "附魔", java.util.regex.Pattern.compile("附魔(?!台)"),
+            "烧炼", java.util.regex.Pattern.compile("(?:烧炼|烤熟|用熔炉|使用熔炉)"),
+            "播种", java.util.regex.Pattern.compile("(?:播种|种下|种植)"),
+            "战斗", java.util.regex.Pattern.compile("(?:击杀|攻击)"));
+
+    private static List<String> primaryActionGaps(String objective, List<SubtaskSpec> specs) {
+        if (objective == null || objective.isBlank() || specs == null || specs.isEmpty()) return List.of();
+        String descriptions = specs.stream().map(SubtaskSpec::description).filter(java.util.Objects::nonNull)
+                .reduce("", (a, b) -> a + "；" + b);
+        List<String> gaps = new ArrayList<>();
+        for (var action : PRIMARY_ACTIONS.entrySet()) {
+            if (positiveMatch(objective, action.getValue()) && !positiveMatch(descriptions, action.getValue())) {
+                gaps.add(action.getKey());
+            }
+        }
+        return gaps;
     }
 
     /**
