@@ -365,6 +365,22 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 背包里的工作台放下不算背包意图与方块判据冲突() {
+        SubtaskSpec place = new SubtaskSpec(
+                "在床附近就地把背包里的 crafting_table 放下安置好，判据=床附近 8 格内有工作台方块。",
+                Map.of("type", "block_nearby", "block", "minecraft:crafting_table", "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(place).isEmpty(), RddPlanGuard.predicateGaps(place).toString());
+    }
+
+    @Test
+    void 存进箱子并列煤与原木不作具体库存缺口() {
+        SubtaskSpec store = new SubtaskSpec(
+                "把随身多余物资（原木/木板、煤等）存进落脚区箱子，判据=床附近容器内物品总件数≥10。",
+                Map.of("type", "stocked", "minimum", 10, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(store).isEmpty(), RddPlanGuard.predicateGaps(store).toString());
+    }
+
+    @Test
     void stocked存放原木圆石泥土不作具体库存缺口() {
         SubtaskSpec stocked = new SubtaskSpec(
                 "把储物箱放到床边8格内，把随身多余的圆石、泥土、原木放进去归位。",

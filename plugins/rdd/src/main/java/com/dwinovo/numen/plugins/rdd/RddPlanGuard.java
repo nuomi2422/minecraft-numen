@@ -84,7 +84,10 @@ final class RddPlanGuard {
                 && !d.matches(".*(?:确认|检查|记录).*(?:可取|存在|位置).*");
         boolean existenceOnly = "block_nearby".equals(String.valueOf(c.get("type")))
                 || "container_nearby".equals(String.valueOf(c.get("type")));
-        if (!declaredPurposes && acquireIntent && existenceOnly) {
+        // 2026-11-28: "把背包里的X放下/放进箱" 是放置动作，世界方块判据正好覆盖其结果；
+        // 只有"清点背包"式（无放置/存入动词）才按背包意图缺口处理。
+        boolean placementOrStore = d.matches(".*(?:放下|放置|安置|摆好|摆上|放到|放进|放在|存进|存入|收进|搬进).*");
+        if (!declaredPurposes && acquireIntent && existenceOnly && !placementOrStore) {
             gaps.add("取得物品（判据只证附近方块或容器存在，未证实际入包）");
         }
         boolean craftIntent = d.contains("合成") || d.contains("制作") || d.contains("打造");
@@ -101,7 +104,7 @@ final class RddPlanGuard {
         if (stateOnlyPredicate(conditionType) && mutationIntent(d) && !exactTransfer) {
             gaps.add("执行动作（当前状态判据可能在开工前已满足，不能证明本步制作/迁移/建造/附魔/存入）");
         }
-        if ("stocked".equals(conditionType) && positiveMatch(d, SPECIFIC_STORED_ITEM)) {
+        if ("stocked".equals(conditionType) && !placementOrStore && positiveMatch(d, SPECIFIC_STORED_ITEM)) {
             gaps.add("具体库存（stocked只证容器总件数，不证铁甲/剑盾/工具等指定物品与套数）");
         }
         if ("lit".equals(conditionType) && positiveMatch(withoutBedAnchorOrInvariant(d), FACILITY_ITEM)) {
