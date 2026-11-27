@@ -365,6 +365,14 @@ class RddPlanGuardTest {
     }
 
     @Test
+    void 免责句与备用动作从句不触发判据缺口() {
+        SubtaskSpec s = new SubtaskSpec(
+                "在落脚区插上火把照明（本判据不证明床/箱子/工作台），若火把不足就先合成再布光。",
+                Map.of("type", "lit", "minimum", 4, "radius", 8), null);
+        assertTrue(RddPlanGuard.predicateGaps(s).isEmpty(), RddPlanGuard.predicateGaps(s).toString());
+    }
+
+    @Test
     void 背包里的工作台放下不算背包意图与方块判据冲突() {
         SubtaskSpec place = new SubtaskSpec(
                 "在床附近就地把背包里的 crafting_table 放下安置好，判据=床附近 8 格内有工作台方块。",

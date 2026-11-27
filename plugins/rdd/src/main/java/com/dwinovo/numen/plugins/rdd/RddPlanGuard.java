@@ -64,10 +64,22 @@ final class RddPlanGuard {
      *
      * @return 未覆盖的要求说明（空 = 覆盖得住）
      */
+    /**
+     * 2026-11-28: 模型常把"本判据不证明X"免责句、"若不足就…"备用动作写进同一步描述；
+     * 判据只该针对主动作。移除括号免责句与条件备用从句后再判"判据是否覆盖描述"，
+     * 避免整批计划因修辞被拒（守卫语义不变，只清洗噪声）。
+     */
+    private static String sanitizeDescription(String raw) {
+        if (raw == null || raw.isBlank()) return "";
+        String out = raw.replaceAll("\\([^)]*(?:不证明|不代表|仅证|只证)[^)]*\\)", "");
+        out = out.replaceAll("[，；。]?\\s*(?:若|如果)[^，。；。]*(?:[，。；]|$)", "");
+        return out;
+    }
+
     static List<String> predicateGaps(com.dwinovo.numen.rdd.api.SubtaskSpec s) {
         List<String> gaps = new ArrayList<>();
         if (s == null) return gaps;
-        String d = s.description() == null ? "" : s.description();
+        String d = sanitizeDescription(s.description());
         // Explicit purposes replace prose inference only, never the real result predicate.
         // All independent final inventory obligations must be declared RETAIN.
         boolean declaredPurposes = !s.resourceUses().isEmpty();
