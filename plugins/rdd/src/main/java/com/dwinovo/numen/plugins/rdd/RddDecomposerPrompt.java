@@ -201,9 +201,6 @@ final class RddDecomposerPrompt {
                     + "  只用下面这些类型：advancement/structure/entity_killed/base/biome/block_nearby/container_nearby/"
                     + "block_mined/item_crafted/item_used/item_picked_up/dimension/position_at/y_below/entity_nearby/block_at/container_at/shelter/stocked/lit/equipment，"
                     + "写别的一律会被丢掉（整条步骤消失且不报错）。ID 不确定就用 #tag。\n"
-                    + "  状态判据只证此刻状态：equipment/base/dimension/stocked/lit/shelter/container_at/position_at 不得冒充制作、迁移、建造、附魔或存入动作。"
-                    + "动作类步骤用本步增量统计或精确交付；stocked只证总件数，不能证明指定装备/套数；lit/shelter不证明其他设施；主手/副手/食物必须与四槽护甲拆步。"
-                    + "精确容器交付用container_at并声明匹配的TRANSFER；每个TRANSFER必须与condition的item/minimum/dimension/xyz完全一致，因此一种物品一个步骤，不能用stocked总件数替代。\n"
                 + "  你只负责给「完成条件」，不要给身体动作指令 —— 身体只有一个驾驶员（执行 AI），"
                 + "派活是它的事，不是规划器的事。\n";
     }
