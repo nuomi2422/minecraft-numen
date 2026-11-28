@@ -59,7 +59,7 @@ AC 步骤工具 `AcTool.execute` 是同步的；Numen 工具是异步 `ToolCall.
 
 ## 6. 已知限制与待办
 
-- 真机集成完整链路 `ac_execute → PAUSED → ac_status → ac_resume → 完成` 已在 2026-08-31 验证核心闭环（提交→后台执行→状态如实反映）；断点续跑全链待游戏环境常驻后复验。
+- 真机集成完整链路 `ac_execute → PAUSED → ac_status → ac_resume → 完成` 已在 2026-08-31 验证核心闭环（提交→后台执行→状态如实反映）；断点续跑全链仍须按当前版本在常驻游戏环境复验，不能把旧直证外推为当前版本全链通过。
 - `plugins/ac` 门面当前无 `ac_cancel`；长任务释放依赖 Numen `task_stop` / `task_status` 轮询，由桥映射为 PAUSED 续跑。
 - `AcJson` 参数数字归一为 Long/Double；`AcFingerprint` 对整数 1/1.0 归一，跨来源稳定。
 - Numen schema → AC ToolSchema 是宽松映射，enum/min/max/嵌套 object 暂不完整表达（宁 ANY 放行不误拒）。

@@ -28,9 +28,11 @@ Read **main** for RDD work. Other branches are not automatically the RDD release
 
 Start with rdd-core/ for task and asset logic, world-state-core/ for observations, experience-core/ and settlement-core/ for their domains; plugins/ adapts these to Minecraft. api/, core/ and ai/ contain the shared engine and its integration changes. The original Numen introduction below is upstream background, **not a claim that every RDD contract has shipped**.
 
-## RDD architecture and development status (2026-11-21)
+## RDD architecture and development status (2026-11-27)
 
 This is the RDD public development fork of [Dwinovo/Numen](https://github.com/Dwinovo/minecraft-numen), not an official upstream release. Upstream code, names and assets retain their attribution and licenses. RDD aims to test long-running autonomous tasks and reusable, improving capabilities in real Minecraft. **Some mechanisms exist; the complete preparation framework and its end-to-end effects are not yet fully validated.**
+
+**Runtime status:** this source tree is not an empty project. RDD modules, Minecraft adapters, AC, task chains and world observation have substantial commit history and multiple real-game runs, including narrow scenarios such as settlement, gathering, combat, death recovery, village chests and bed anchors. Narrow-scene passes are not a claim that the complete framework has been validated; full-game completion, broad mod compatibility and long-term stability remain unproven.
 
 ### Four architectural lines, a shared factual foundation
 

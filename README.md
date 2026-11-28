@@ -13,6 +13,8 @@
 ![Java](https://img.shields.io/badge/Java-17%20%7C%2021%20%7C%2025-007396?style=flat-square&logo=openjdk&logoColor=white)
 ![License](https://img.shields.io/badge/code-LGPL--3.0-A8731E?style=flat-square)
 
+> **版本适用范围（2026-11-24）：** 上面三枚徽章沿用上游 Numen 的总体适配声明，**不是本 RDD 分支的已验证矩阵**。本分支当前构建配置固定为 **Minecraft 1.21.1 / Java 21 / NeoForge 21.1.233**（见 `gradle.properties`）；实际通过编译、加载和游戏内验证的版本只按各批验证记录，未逐版本验收的不据此宣称支持。
+
 [**快速开始**](#快速开始) · [**能做什么**](#能做什么) · [**扩展它**](#扩展它) · [**外接大脑**](#外接大脑) · [**设计**](#设计) · [**常见问题**](#常见问题) · [**给开发者**](#给开发者) · [**路线图**](#路线图)
 
 </div>
@@ -31,9 +33,11 @@
 
 先看 rdd-core/ 的任务与资产逻辑，world-state-core/ 的观测，experience-core/ 与 settlement-core/ 的领域能力，plugins/ 的 Minecraft 适配；api/、core/、ai/ 是底座及其接缝。下方原 Numen 产品介绍作为上游背景保留，**不表示全部 RDD 架构已经交付**。
 
-## RDD 架构与开发状态（2026-11-21）
+## RDD 架构与开发状态（2026-11-27）
 
 这是基于 [Dwinovo/Numen](https://github.com/Dwinovo/minecraft-numen) 的 RDD 公开开发 fork，不是上游官方发行，也不宣称上游代码与资源为本方原创。目标是在真实 Minecraft 中检验长程自主任务、可复用能力和持续改进；目前处于**轮回准备工程：已有部分实现，完整框架接线与效果尚未整体验收**。
+
+**实机运行现状：** 这份源码已不是空项目。RDD 模块、Minecraft 适配、AC、任务链和世界观测等已有大量提交与多轮实机运行记录，覆盖安家、采集、战斗、死亡恢复、村庄/箱子/床绑点等窄场景。这里不把窄场景通过写成完整框架已验收；完整通关、全模组适配和长期稳定仍未整体证明。
 
 ### 四条宏观线，一个共同事实底座
 
@@ -68,7 +72,7 @@ AC 直接读取有类型的世界参数，复用算术、比较、筛选、聚�
 
 上述包含已存在机制与待补契约，**不是全部已经实现或实机有效的功能清单**。源码、离线测试、构建、安装/加载、实际调用、世界效果分别验；上传不代表部署，单测数量与模型自述不代表能力完成。架构 MCP 是内部有来源的导航，不是世界真值或自动派工器。
 
-代码布局：[`rdd-core/`](rdd-core)、[`world-state-core/`](world-state-core)、[`settlement-core/`](settlement-core)、[`experience-core/`](experience-core)、[`plugins/`](plugins)、[`api/`](api)、[`core/`](core)。工程工具见 [rdd-harness](https://github.com/nuomi2422/rdd-harness)，项目门面见 [rdd-restart-doer](https://github.com/nuomi2422/restart-developmental-doer)。私有记录及本机配置不随公开介绍发布。
+代码布局：[`rdd-core/`](rdd-core)、[`world-state-core/`](world-state-core)、[`settlement-core/`](settlement-core)、[`experience-core/`](experience-core)、[`plugins/`](plugins)、[`api/`](api)、[`core/`](core)。工程工具见 [rdd-harness](https://github.com/nuomi2422/rdd-harness)，项目门面见 [restart-developmental-doer](https://github.com/nuomi2422/restart-developmental-doer)。私有记录及本机配置不随公开介绍发布。
 
 ---
 
